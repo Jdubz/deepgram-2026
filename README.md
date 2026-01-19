@@ -28,10 +28,11 @@ docker compose down
 ```
 
 Services:
-- **Backend**: http://localhost:3000
+- **Backend**: http://localhost:3001
 - **LocalAI**: http://localhost:8080
 
-Note: First startup takes a few minutes while LocalAI downloads models.
+Note: First startup takes a few minutes while LocalAI downloads models (~10GB).
+Note: Docker uses port 3001. Curl examples below use port 3000 (local dev). Adjust accordingly.
 
 ### Option 2: Local Development
 
