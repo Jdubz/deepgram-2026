@@ -12,8 +12,8 @@
 import Database from "better-sqlite3";
 import path from "path";
 
-// Path to shared SQLite database
-const DB_PATH = path.resolve(__dirname, "../../../llm-inference/queue.db");
+// Path to SQLite database (in backend/data/)
+const DB_PATH = path.resolve(__dirname, "../../data/queue.db");
 
 export type JobType = "transcribe" | "summarize";
 export type JobStatus = "pending" | "processing" | "completed" | "failed";
@@ -382,6 +382,198 @@ class InferenceQueueService {
     }
 
     throw new Error(`Submission ${submissionId} timed out after ${timeoutMs}ms`);
+  }
+
+  // ===========================================================================
+  // Job Processor Methods
+  // ===========================================================================
+
+  /**
+   * Initialize database tables if they don't exist
+   */
+  initializeDatabase(): void {
+    const db = this.getDb();
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_type TEXT NOT NULL CHECK(job_type IN ('transcribe', 'summarize')),
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
+        provider TEXT NOT NULL DEFAULT 'local',
+        input_file_path TEXT,
+        input_text TEXT,
+        output_text TEXT,
+        error_message TEXT,
+        audio_file_id TEXT,
+        metadata TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        started_at TEXT,
+        completed_at TEXT,
+        processing_time_ms INTEGER,
+        model_used TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS audio_submissions (
+        id TEXT PRIMARY KEY,
+        filename TEXT NOT NULL,
+        original_filename TEXT,
+        file_path TEXT NOT NULL,
+        mime_type TEXT,
+        file_size INTEGER,
+        duration_seconds REAL,
+        transcript TEXT,
+        transcript_job_id INTEGER REFERENCES jobs(id),
+        transcribed_at TEXT,
+        summary TEXT,
+        summary_job_id INTEGER REFERENCES jobs(id),
+        summarized_at TEXT,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'transcribing', 'summarizing', 'completed', 'failed')),
+        error_message TEXT,
+        metadata TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+      CREATE INDEX IF NOT EXISTS idx_jobs_audio_file_id ON jobs(audio_file_id);
+      CREATE INDEX IF NOT EXISTS idx_submissions_status ON audio_submissions(status);
+    `);
+  }
+
+  /**
+   * Claim the next pending job atomically
+   * Uses UPDATE ... WHERE id = (SELECT ...) pattern to avoid race conditions
+   */
+  claimNextJob(): Job | null {
+    const db = this.getDb();
+
+    // Atomic claim: SELECT + UPDATE in one statement
+    const stmt = db.prepare(`
+      UPDATE jobs
+      SET status = 'processing', started_at = datetime('now')
+      WHERE id = (
+        SELECT id FROM jobs
+        WHERE status = 'pending'
+        ORDER BY created_at ASC
+        LIMIT 1
+      )
+      RETURNING *
+    `);
+
+    const job = stmt.get() as Job | undefined;
+    return job || null;
+  }
+
+  /**
+   * Mark a job as completed with output
+   */
+  completeJob(
+    jobId: number,
+    outputText: string,
+    modelUsed: string,
+    processingTimeMs: number
+  ): void {
+    const db = this.getDb();
+
+    const stmt = db.prepare(`
+      UPDATE jobs
+      SET status = 'completed',
+          output_text = ?,
+          model_used = ?,
+          processing_time_ms = ?,
+          completed_at = datetime('now')
+      WHERE id = ?
+    `);
+
+    stmt.run(outputText, modelUsed, processingTimeMs, jobId);
+  }
+
+  /**
+   * Mark a job as failed with error message
+   */
+  failJob(jobId: number, errorMessage: string): void {
+    const db = this.getDb();
+
+    const stmt = db.prepare(`
+      UPDATE jobs
+      SET status = 'failed',
+          error_message = ?,
+          completed_at = datetime('now')
+      WHERE id = ?
+    `);
+
+    stmt.run(errorMessage, jobId);
+  }
+
+  /**
+   * Update submission status
+   */
+  updateSubmissionStatus(
+    submissionId: string,
+    status: SubmissionStatus,
+    errorMessage?: string
+  ): void {
+    const db = this.getDb();
+
+    if (errorMessage) {
+      const stmt = db.prepare(`
+        UPDATE audio_submissions
+        SET status = ?, error_message = ?, updated_at = datetime('now')
+        WHERE id = ?
+      `);
+      stmt.run(status, errorMessage, submissionId);
+    } else {
+      const stmt = db.prepare(`
+        UPDATE audio_submissions
+        SET status = ?, updated_at = datetime('now')
+        WHERE id = ?
+      `);
+      stmt.run(status, submissionId);
+    }
+  }
+
+  /**
+   * Update submission with transcript
+   */
+  updateSubmissionTranscript(
+    submissionId: string,
+    transcript: string,
+    jobId: number
+  ): void {
+    const db = this.getDb();
+
+    const stmt = db.prepare(`
+      UPDATE audio_submissions
+      SET transcript = ?,
+          transcript_job_id = ?,
+          transcribed_at = datetime('now'),
+          updated_at = datetime('now')
+      WHERE id = ?
+    `);
+
+    stmt.run(transcript, jobId, submissionId);
+  }
+
+  /**
+   * Update submission with summary
+   */
+  updateSubmissionSummary(
+    submissionId: string,
+    summary: string,
+    jobId: number
+  ): void {
+    const db = this.getDb();
+
+    const stmt = db.prepare(`
+      UPDATE audio_submissions
+      SET summary = ?,
+          summary_job_id = ?,
+          summarized_at = datetime('now'),
+          updated_at = datetime('now')
+      WHERE id = ?
+    `);
+
+    stmt.run(summary, jobId, submissionId);
   }
 
   /**

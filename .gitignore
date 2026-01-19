@@ -35,10 +35,12 @@ test-audio/
 
 # Uploads (runtime data)
 uploads/
+backend/uploads/*
+!backend/uploads/.gitkeep
 
-# LLM Inference runtime
-llm-inference/queue.db
-llm-inference/queue.db-wal
-llm-inference/queue.db-shm
-llm-inference/.env
-llm-inference/__pycache__/
+# Database (runtime data)
+backend/data/*
+!backend/data/.gitkeep
+*.db
+*.db-wal
+*.db-shm

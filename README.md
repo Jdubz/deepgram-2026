@@ -44,28 +44,37 @@ chmod +x test-api.sh
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/files` | Upload audio file with metadata |
+| POST | `/files` | Upload audio file (queued for processing) |
 | GET | `/list` | List files (supports `?maxduration=N`, `?minduration=N`) |
-| GET | `/download?name=X` | Download file by name |
-| GET | `/info?name=X` | Get AI summary of file |
+| GET | `/download?id=X` | Download file by ID |
+| GET | `/info?id=X` | Get transcript/summary (or processing status) |
+| GET | `/submissions/:id` | Full submission details with jobs |
+| GET | `/queue/status` | Queue and processor status |
 | GET | `/files/:id` | Get file metadata by ID |
 | DELETE | `/files/:id` | Delete file by ID |
-| GET | `/health` | Health check |
+| GET | `/health` | Health check (includes LocalAI status) |
 
 ## Curl Examples
 
 ```bash
-# Upload a file
+# Upload a file (queued for processing)
 curl -X POST -F "file=@myfile.wav" http://localhost:3000/files
+# Returns: { id: "abc123", status: "pending" }
 
 # List files with filter
 curl "http://localhost:3000/list?maxduration=300"
 
-# Download a file
-curl "http://localhost:3000/download?name=myfile.wav" -o downloaded.wav
+# Check processing status
+curl "http://localhost:3000/submissions/abc123"
 
-# Get AI summary
-curl "http://localhost:3000/info?name=myfile.wav"
+# Get transcript/summary (after processing complete)
+curl "http://localhost:3000/info?id=abc123"
+
+# Download a file
+curl "http://localhost:3000/download?id=abc123" -o downloaded.wav
+
+# Check queue status
+curl "http://localhost:3000/queue/status"
 ```
 
 ## Project Structure
@@ -74,26 +83,31 @@ curl "http://localhost:3000/info?name=myfile.wav"
 deepgram-2026/
 ├── backend/
 │   ├── src/
-│   │   ├── index.ts          # Express server entry point
+│   │   ├── index.ts              # Express server entry point
 │   │   ├── routes/
-│   │   │   └── audio.ts      # API route handlers
+│   │   │   └── audio.ts          # API route handlers
 │   │   ├── services/
-│   │   │   ├── storage.ts    # Audio storage (in-memory)
-│   │   │   ├── audio.ts      # Audio validation/metadata
-│   │   │   └── llm.ts        # LLM service (mocked)
+│   │   │   ├── storage.ts        # Audio storage (in-memory)
+│   │   │   ├── audio.ts          # Audio validation/metadata
+│   │   │   ├── llm.ts            # LLM service (mocked)
+│   │   │   ├── localai.ts        # LocalAI HTTP client
+│   │   │   ├── job-processor.ts  # Background job processor
+│   │   │   └── inference-queue.ts # SQLite queue management
 │   │   └── types/
-│   │       └── index.ts      # TypeScript interfaces
+│   │       └── index.ts          # TypeScript interfaces
+│   ├── data/                     # SQLite database (gitignored)
+│   ├── uploads/                  # Uploaded audio files (gitignored)
 │   ├── package.json
 │   └── tsconfig.json
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx           # Main React component
-│   │   └── main.tsx          # Entry point
+│   │   ├── App.tsx               # Main React component
+│   │   └── main.tsx              # Entry point
 │   ├── package.json
 │   └── vite.config.ts
 ├── scripts/
-│   ├── test-api.sh           # API test suite
-│   └── curl-examples.sh      # Example curl commands
+│   ├── test-api.sh               # API test suite
+│   └── curl-examples.sh          # Example curl commands
 └── README.md
 ```
 
@@ -133,6 +147,31 @@ The codebase includes TODO comments marking exercises to complete:
 - File: `backend/src/services/audio.ts`
 - Implement robust file validation with magic bytes
 
+### Exercise 9: Local Inference with LocalAI
+- Files: `backend/src/services/localai.ts`, `backend/src/services/job-processor.ts`
+- Connect to LocalAI for Whisper transcription and LLM summarization
+- Job processor runs embedded in Express server
+- Sequential processing (single-GPU constraint)
+
+## Local AI Setup (Optional)
+
+To enable real transcription and summarization with LocalAI:
+
+```bash
+# Run LocalAI with Docker (CPU)
+docker run -p 8080:8080 localai/localai:latest-aio-cpu
+
+# Or with GPU support
+docker run -p 8080:8080 --gpus all localai/localai:latest-aio-gpu
+
+# Environment variables (set before starting backend)
+export LOCALAI_URL=http://localhost:8080
+export LOCALAI_WHISPER_MODEL=whisper-1
+export LOCALAI_LLM_MODEL=llama3
+```
+
+Without LocalAI running, the health check will show `localAI: { healthy: false }`.
+
 ## Discussion Topics
 
 Be prepared to discuss:
@@ -151,6 +190,8 @@ Be prepared to discuss:
 - **Frontend**: React, Vite, TypeScript
 - **Audio Processing**: music-metadata
 - **File Upload**: multer
+- **Database**: SQLite (better-sqlite3)
+- **Local AI** (optional): LocalAI (Docker) - provides OpenAI-compatible API for Whisper + LLM
 
 ## License
 

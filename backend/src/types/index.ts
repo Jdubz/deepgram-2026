@@ -50,7 +50,7 @@ export interface AudioInfoResponse {
   duration: number;
   size: number;
   summary: string;
-  // TODO (Exercise 2): Add more fields for the LLM response
+  transcript?: string;
 }
 
 /**

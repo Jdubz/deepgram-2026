@@ -10,9 +10,13 @@
 
 import { Router, Request, Response } from "express";
 import multer from "multer";
+import path from "path";
+import fs from "fs";
+import { v4 as uuidv4 } from "uuid";
 import { storage } from "../services/storage.js";
 import { audioService } from "../services/audio.js";
 import { llmService } from "../services/llm.js";
+import { inferenceQueue } from "../services/inference-queue.js";
 import {
   ListFilesQuery,
   ListFilesResponse,
@@ -22,9 +26,28 @@ import {
 
 const router = Router();
 
-// Configure multer for file uploads (memory storage for now)
+// Configure upload directory
+const UPLOAD_DIR = path.resolve(__dirname, "../../uploads");
+
+// Ensure upload directory exists
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+}
+
+// Configure multer for disk storage
+const diskStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, UPLOAD_DIR);
+  },
+  filename: (req, file, cb) => {
+    const id = uuidv4();
+    const ext = path.extname(file.originalname);
+    cb(null, `${id}${ext}`);
+  },
+});
+
 const upload = multer({
-  storage: multer.memoryStorage(),
+  storage: diskStorage,
   limits: {
     fileSize: 100 * 1024 * 1024, // 100MB limit
   },
@@ -33,7 +56,10 @@ const upload = multer({
 /**
  * POST /files
  *
- * Upload raw audio data and store it with metadata.
+ * Upload raw audio data and queue it for processing.
+ *
+ * The file is saved to disk and a submission is created in the queue.
+ * Processing happens asynchronously - use GET /submissions/:id to check status.
  *
  * Example:
  *   curl -X POST -F "file=@myfile.wav" -F "title=My Recording" http://localhost:3000/files
@@ -56,33 +82,46 @@ router.post(
         }
       }
 
-      // Validate and extract audio metadata
-      const result = await audioService.validateAndExtract(
-        req.file.buffer,
+      // Get file info from disk storage
+      const filePath = req.file.path;
+      const filename = req.file.filename;
+      const id = path.basename(filename, path.extname(filename));
+
+      // Create submission in queue with auto-processing
+      const submission = inferenceQueue.createSubmission({
+        id,
+        filename,
+        filePath,
+        originalFilename: req.file.originalname,
+        mimeType: req.file.mimetype,
+        fileSize: req.file.size,
+        metadata: customMetadata,
+        autoProcess: true,
+      });
+
+      // Also store in memory storage for backward compatibility with /list, /download
+      const fileContent = fs.readFileSync(filePath);
+      const audioResult = await audioService.validateAndExtract(
+        fileContent,
         req.file.originalname,
         customMetadata
       );
 
-      if (!result.valid || !result.metadata) {
-        res.status(422).json({ error: result.error });
-        return;
+      if (audioResult.valid && audioResult.metadata) {
+        // Override ID to match submission ID
+        audioResult.metadata.id = id;
+        await storage.store(id, {
+          metadata: audioResult.metadata,
+          content: fileContent,
+        });
       }
 
-      // Store the file
-      await storage.store(result.metadata.id, {
-        metadata: result.metadata,
-        content: req.file.buffer,
+      res.status(201).json({
+        id: submission.id,
+        filename: submission.filename,
+        status: submission.status,
+        message: "File uploaded and queued for processing",
       });
-
-      const response: UploadResponse = {
-        id: result.metadata.id,
-        filename: result.metadata.filename,
-        duration: result.metadata.duration,
-        size: result.metadata.size,
-        message: "File uploaded successfully",
-      };
-
-      res.status(201).json(response);
     } catch (error) {
       console.error("Upload error:", error);
       res.status(500).json({ error: "Internal server error" });
@@ -193,44 +232,62 @@ router.get("/download", async (req: Request, res: Response): Promise<void> => {
 /**
  * GET /info
  *
- * Get a summary of the uploaded file using an LLM.
+ * Get transcript and summary for a processed audio file.
  *
  * Query parameters:
- *   - name: Filename to analyze
- *   - id: File ID to analyze (alternative to name)
+ *   - id: Submission ID (required)
+ *
+ * Returns processing status if not yet complete.
  *
  * Example:
- *   curl http://localhost:3000/info?name=myfile.wav
+ *   curl http://localhost:3000/info?id=abc123
  */
 router.get("/info", async (req: Request, res: Response): Promise<void> => {
   try {
-    const { name, id } = req.query;
+    const { id } = req.query;
 
-    if (!name && !id) {
-      res.status(400).json({ error: "Must provide 'name' or 'id' query parameter" });
+    if (!id) {
+      res.status(400).json({ error: "Must provide 'id' query parameter" });
       return;
     }
 
-    let file;
-    if (id) {
-      file = await storage.getById(id as string);
-    } else {
-      file = await storage.getByFilename(name as string);
-    }
+    // Get submission from queue
+    const submission = inferenceQueue.getSubmission(id as string);
 
-    if (!file) {
-      res.status(404).json({ error: "File not found" });
+    if (!submission) {
+      res.status(404).json({ error: "Submission not found" });
       return;
     }
 
-    // Generate summary using LLM service
-    const llmResponse = await llmService.summarize(file.metadata);
+    // If still processing, return status
+    if (submission.status !== "completed" && submission.status !== "failed") {
+      res.json({
+        id: submission.id,
+        filename: submission.original_filename || submission.filename,
+        status: submission.status,
+        message: `Processing: ${submission.status}`,
+      });
+      return;
+    }
 
+    // If failed, return error
+    if (submission.status === "failed") {
+      res.json({
+        id: submission.id,
+        filename: submission.original_filename || submission.filename,
+        status: "failed",
+        error: submission.error_message,
+      });
+      return;
+    }
+
+    // Return completed submission info
     const response: AudioInfoResponse = {
-      filename: file.metadata.filename,
-      duration: file.metadata.duration,
-      size: file.metadata.size,
-      summary: llmResponse.text,
+      filename: submission.original_filename || submission.filename,
+      duration: submission.duration_seconds || 0,
+      size: submission.file_size || 0,
+      summary: submission.summary || "",
+      transcript: submission.transcript || "",
     };
 
     res.json(response);
@@ -280,6 +337,33 @@ router.delete("/files/:id", async (req: Request, res: Response): Promise<void> =
     res.json({ message: "File deleted successfully" });
   } catch (error) {
     console.error("Delete error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+/**
+ * GET /submissions/:id
+ *
+ * Get full submission details including associated jobs.
+ */
+router.get("/submissions/:id", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const submission = inferenceQueue.getSubmission(req.params.id);
+
+    if (!submission) {
+      res.status(404).json({ error: "Submission not found" });
+      return;
+    }
+
+    // Get associated jobs
+    const jobs = inferenceQueue.getJobsForSubmission(req.params.id);
+
+    res.json({
+      submission,
+      jobs,
+    });
+  } catch (error) {
+    console.error("Get submission error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });

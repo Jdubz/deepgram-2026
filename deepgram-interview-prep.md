@@ -56,9 +56,13 @@ deepgram-2026/
 │   │   │   ├── storage.ts        # Audio storage (in-memory)
 │   │   │   ├── audio.ts          # Audio validation/metadata extraction
 │   │   │   ├── llm.ts            # LLM service (mocked)
-│   │   │   └── inference-queue.ts # SQLite queue for local inference
+│   │   │   ├── localai.ts        # LocalAI HTTP client
+│   │   │   ├── job-processor.ts  # Background job processor
+│   │   │   └── inference-queue.ts # SQLite queue management
 │   │   └── types/
 │   │       └── index.ts          # TypeScript interfaces
+│   ├── data/                     # SQLite database (gitignored)
+│   ├── uploads/                  # Uploaded audio files (gitignored)
 │   ├── package.json
 │   └── tsconfig.json
 ├── frontend/
@@ -67,10 +71,6 @@ deepgram-2026/
 │   │   └── main.tsx              # Entry point
 │   ├── package.json
 │   └── vite.config.ts
-├── llm-inference/
-│   ├── worker.py                 # Python worker for local AI inference
-│   ├── queue.db                  # SQLite queue database
-│   └── requirements.txt
 ├── scripts/
 │   ├── test-api.sh               # API test suite
 │   └── curl-examples.sh          # Example curl commands
@@ -1158,36 +1158,96 @@ cd scripts
 | 6 | Storage Abstraction | `backend/src/services/storage.ts` | Implement S3 storage |
 | 7 | Authentication | `backend/src/routes/audio.ts` | Add JWT auth middleware |
 | 8 | Data Validation | `backend/src/services/audio.ts` | Robust file validation with magic bytes |
-| 9 | Local Inference | `backend/src/routes/audio.ts` | Wire up Python inference worker |
+| 9 | Local Inference | `backend/src/services/job-processor.ts` | LocalAI + Node.js job processor |
 
-### Exercise 9: Local LLM Integration
+### Exercise 9: Local LLM Integration with LocalAI
 
-Connect the API to the local inference worker for real transcription and summarization.
+Connect the API to LocalAI for real transcription (Whisper) and summarization (LLM).
+
+**Architecture Overview:**
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│   Express    │────▶│     Job      │────▶│   LocalAI    │
+│   Server     │     │  Processor   │     │   (Docker)   │
+└──────────────┘     └──────────────┘     └──────────────┘
+       │                    │                    │
+       │                    ▼                    │
+       │             ┌──────────────┐            │
+       └────────────▶│   SQLite     │◀───────────┘
+                     │   Queue      │
+                     └──────────────┘
+```
+
+The job processor runs embedded in the Express server and processes jobs sequentially (single-GPU constraint). LocalAI provides an OpenAI-compatible API for both Whisper and LLM inference.
 
 **Files involved:**
-- `llm-inference/worker.py` - Python worker (already complete)
-- `backend/src/services/inference-queue.ts` - TypeScript queue interface (already complete)
-- `backend/src/routes/audio.ts` - Needs integration
+- `backend/src/services/localai.ts` - HTTP client for LocalAI
+- `backend/src/services/job-processor.ts` - Background job processor
+- `backend/src/services/inference-queue.ts` - SQLite queue management
+- `backend/src/routes/audio.ts` - API endpoints
 
-**Tasks:**
-1. Modify `POST /files` to save audio to disk and create an `audio_submission`
-2. Modify `GET /info` to return real transcript/summary from SQLite
-3. Add `GET /submissions/:id` endpoint to check processing status
-4. Add `GET /queue/status` endpoint to show worker queue status
+**Key Endpoints:**
+- `POST /files` - Upload audio → queued for processing
+- `GET /info?id=X` - Get transcript/summary (or processing status)
+- `GET /submissions/:id` - Full submission details with jobs
+- `GET /queue/status` - Queue and processor status
+- `GET /health` - Service health including LocalAI status
 
-**Start the worker:**
+**Start LocalAI (requires Docker):**
 ```bash
-cd "/home/jdubz/Development/interview prep"
-source venv/bin/activate
-cd deepgram-2026/llm-inference
-python worker.py
+# Pull and run LocalAI with Whisper + LLM support
+docker run -p 8080:8080 \
+  -v $HOME/models:/models \
+  localai/localai:latest-aio-cpu
+
+# Or with GPU (recommended)
+docker run -p 8080:8080 --gpus all \
+  -v $HOME/models:/models \
+  localai/localai:latest-aio-gpu
+```
+
+**Start the backend:**
+```bash
+cd backend
+npm install
+npm run dev
 ```
 
 **Test flow:**
-1. Upload audio via API → creates submission + transcribe job
-2. Worker transcribes (Whisper) → auto-creates summarize job
-3. Worker summarizes (Llama/Ollama) → marks submission complete
-4. Query `/info` returns real AI-generated content
+```bash
+# 1. Check health (LocalAI connected)
+curl http://localhost:3000/health
+
+# 2. Upload audio file
+curl -X POST -F "file=@test.wav" http://localhost:3000/files
+# Returns: { id: "abc123", status: "pending" }
+
+# 3. Check queue status
+curl http://localhost:3000/queue/status
+# Returns: { queue: { pending: 1 }, processor: { isProcessing: true } }
+
+# 4. Poll for completion
+curl http://localhost:3000/submissions/abc123
+# Eventually: { submission: { status: "completed", transcript: "...", summary: "..." } }
+
+# 5. Get final info
+curl http://localhost:3000/info?id=abc123
+# Returns: { transcript: "...", summary: "..." }
+```
+
+**Processing Flow:**
+1. Upload audio → saves to `backend/uploads/` + creates submission
+2. Job processor claims transcribe job (atomic)
+3. LocalAI transcribes (Whisper via `/v1/audio/transcriptions`)
+4. Auto-creates summarize job
+5. LocalAI summarizes (LLM via `/v1/chat/completions`)
+6. Submission marked complete with transcript + summary
+
+**Single-Job Guarantee:**
+Three layers ensure only one job runs at a time:
+1. **Mutex**: `isProcessing` boolean checked before claiming
+2. **Atomic SQL**: `UPDATE ... WHERE id = (SELECT ...) RETURNING *`
+3. **No parallelism**: Sequential polling loop
 
 ### Study Flow
 
@@ -1260,8 +1320,8 @@ During the interview, they may ask you to add:
 
 ### TypeScript/Node Libraries
 ```bash
-npm install express multer music-metadata uuid zod
-npm install -D typescript @types/express @types/multer @types/uuid
+npm install express multer music-metadata uuid zod better-sqlite3
+npm install -D typescript @types/express @types/multer @types/uuid @types/better-sqlite3
 ```
 
 ### LLM Libraries
@@ -1274,6 +1334,20 @@ npm install openai @anthropic-ai/sdk @langchain/openai
 npm install @aws-sdk/client-s3 @aws-sdk/s3-request-presigner
 ```
 
+### LocalAI Setup (for local inference)
+```bash
+# Run LocalAI with Docker (CPU)
+docker run -p 8080:8080 localai/localai:latest-aio-cpu
+
+# Or with GPU support
+docker run -p 8080:8080 --gpus all localai/localai:latest-aio-gpu
+
+# Environment variables (optional)
+export LOCALAI_URL=http://localhost:8080
+export LOCALAI_WHISPER_MODEL=whisper-1
+export LOCALAI_LLM_MODEL=llama3
+```
+
 ### Run Server
 ```bash
 cd backend && npm run dev
@@ -1281,15 +1355,24 @@ cd backend && npm run dev
 
 ### Test with curl
 ```bash
-# Upload
+# Upload (queued for processing)
 curl -X POST -F "file=@test.wav" -F "title=My Recording" http://localhost:3000/files
 
-# List
+# List files
 curl "http://localhost:3000/list?maxduration=300"
 
 # Download
-curl "http://localhost:3000/download?name=test.wav" -o downloaded.wav
+curl "http://localhost:3000/download?id=abc123" -o downloaded.wav
 
-# Info
-curl "http://localhost:3000/info?name=test.wav"
+# Check processing status
+curl "http://localhost:3000/submissions/abc123"
+
+# Get transcript/summary (after processing)
+curl "http://localhost:3000/info?id=abc123"
+
+# Check queue status
+curl "http://localhost:3000/queue/status"
+
+# Health check (includes LocalAI status)
+curl "http://localhost:3000/health"
 ```
