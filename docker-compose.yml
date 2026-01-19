@@ -26,7 +26,7 @@ services:
           memory: 512M
 
   localai:
-    image: localai/localai:latest-aio-gpu
+    image: localai/localai:master-aio-gpu-nvidia-cuda-13
     ports:
       - "8080:8080"
     environment:
