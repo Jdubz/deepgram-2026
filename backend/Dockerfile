@@ -1,5 +1,5 @@
-# Build stage
-FROM node:20-slim AS builder
+# Base stage with build dependencies
+FROM node:20-slim AS base
 
 WORKDIR /app
 
@@ -8,13 +8,31 @@ RUN apt-get update && apt-get install -y \
     python3 \
     make \
     g++ \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy package files first (better layer caching)
 COPY package*.json ./
 
-# Install all dependencies (including dev for TypeScript build)
+# Install all dependencies (including dev)
 RUN npm ci
+
+# Development stage - hot reload with tsx watch
+FROM base AS development
+
+# Create directories for data and uploads
+RUN mkdir -p /app/data /app/uploads
+
+ENV NODE_ENV=development
+ENV PORT=3000
+
+EXPOSE 3000
+
+# Source code mounted as volume, run tsx watch
+CMD ["npm", "run", "dev"]
+
+# Builder stage - compile TypeScript
+FROM base AS builder
 
 # Copy source code
 COPY tsconfig.json ./

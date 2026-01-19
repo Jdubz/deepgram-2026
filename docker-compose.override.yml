@@ -1,0 +1,15 @@
+# Development overrides - auto-merged with docker-compose.yml
+# For production, use: docker compose -f docker-compose.yml up
+services:
+  backend:
+    build:
+      target: development
+    volumes:
+      # Mount source code for hot reload
+      - ./backend/src:/app/src:ro
+      - ./backend/tsconfig.json:/app/tsconfig.json:ro
+      # Persist data locally for dev
+      - ./backend/data:/app/data
+      - ./backend/uploads:/app/uploads
+    environment:
+      - NODE_ENV=development
