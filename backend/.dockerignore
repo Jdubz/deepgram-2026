@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build output (will be built in container)
+dist/
+
+# Development files
+*.log
+npm-debug.log*
+
+# Runtime data
+data/
+uploads/
+*.db
+*.db-wal
+*.db-shm
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+coverage/
+test-audio/
+
+# Git
+.git/
+.gitignore

@@ -12,7 +12,30 @@ From the interview prompt:
 
 ## Quick Start
 
-### Backend
+### Option 1: Docker Compose (Recommended)
+
+Run both backend and LocalAI with GPU support:
+
+```bash
+# Start all services
+docker compose up -d
+
+# View logs
+docker compose logs -f
+
+# Stop services
+docker compose down
+```
+
+Services:
+- **Backend**: http://localhost:3000
+- **LocalAI**: http://localhost:8080
+
+Note: First startup takes a few minutes while LocalAI downloads models.
+
+### Option 2: Local Development
+
+#### Backend
 
 ```bash
 cd backend
@@ -22,7 +45,7 @@ npm run dev
 
 Server runs at http://localhost:3000
 
-### Frontend
+#### Frontend
 
 ```bash
 cd frontend
@@ -31,6 +54,12 @@ npm run dev
 ```
 
 Frontend runs at http://localhost:5173
+
+#### LocalAI (for real transcription/summarization)
+
+```bash
+docker run -p 8080:8080 --gpus all localai/localai:latest-aio-gpu
+```
 
 ### Test the API
 
@@ -97,6 +126,7 @@ deepgram-2026/
 │   │       └── index.ts          # TypeScript interfaces
 │   ├── data/                     # SQLite database (gitignored)
 │   ├── uploads/                  # Uploaded audio files (gitignored)
+│   ├── Dockerfile                # Backend container image
 │   ├── package.json
 │   └── tsconfig.json
 ├── frontend/
@@ -108,6 +138,7 @@ deepgram-2026/
 ├── scripts/
 │   ├── test-api.sh               # API test suite
 │   └── curl-examples.sh          # Example curl commands
+├── docker-compose.yml            # Run backend + LocalAI together
 └── README.md
 ```
 
