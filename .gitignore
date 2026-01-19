@@ -44,3 +44,9 @@ backend/data/*
 *.db
 *.db-wal
 *.db-shm
+
+# Models (large binary files, keep configs)
+models/*.gguf
+models/*.bin
+models/*.safetensors
+models/*.onnx

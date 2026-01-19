@@ -28,7 +28,7 @@ export interface LocalAIConfig {
 const DEFAULT_CONFIG: LocalAIConfig = {
   baseUrl: process.env.LOCALAI_URL || "http://localhost:8080",
   whisperModel: process.env.LOCALAI_WHISPER_MODEL || "whisper-1",
-  llmModel: process.env.LOCALAI_LLM_MODEL || "llama3",
+  llmModel: process.env.LOCALAI_LLM_MODEL || "qwen2.5-7b",
   timeoutMs: 300000, // 5 minutes for long audio
 };
 

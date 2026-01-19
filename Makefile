@@ -5,7 +5,8 @@
         test test-backend test-api curl-examples \
         db-reset db-status \
         clean clean-all clean-db logs \
-        test-health test-upload test-list
+        test-health test-upload test-list \
+        localai-restart localai-logs localai-models
 
 # Default target
 help:
@@ -40,6 +41,11 @@ help:
 	@echo "Database:"
 	@echo "  make db-reset       Reset the SQLite database"
 	@echo "  make db-status      Show queue status"
+	@echo ""
+	@echo "LocalAI:"
+	@echo "  make localai-restart  Restart LocalAI container"
+	@echo "  make localai-logs     View LocalAI logs"
+	@echo "  make localai-models   List available models"
 	@echo ""
 	@echo "Utilities:"
 	@echo "  make clean          Remove build artifacts (preserves node_modules)"
@@ -176,3 +182,16 @@ endif
 
 test-list:
 	@curl -s http://localhost:3001/list | jq .
+
+# =============================================================================
+# LocalAI
+# =============================================================================
+
+localai-restart:
+	docker restart deepgram-2026-localai-1
+
+localai-logs:
+	docker logs -f deepgram-2026-localai-1
+
+localai-models:
+	@curl -s http://localhost:8080/v1/models | jq -r '.data[].id'
