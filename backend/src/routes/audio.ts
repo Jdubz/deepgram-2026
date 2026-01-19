@@ -15,12 +15,12 @@ import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
 import { storage } from "../services/storage.js";
 import { audioService } from "../services/audio.js";
-import { llmService } from "../services/llm.js";
 import { inferenceQueue } from "../services/inference-queue.js";
+import { getDefaultProvider } from "../services/provider-factory.js";
 import {
+  Provider,
   ListFilesQuery,
   ListFilesResponse,
-  UploadResponse,
   AudioInfoResponse,
 } from "../types/index.js";
 
@@ -61,8 +61,13 @@ const upload = multer({
  * The file is saved to disk and a submission is created in the queue.
  * Processing happens asynchronously - use GET /submissions/:id to check status.
  *
+ * Form fields:
+ *   - file: The audio file (required)
+ *   - provider: Inference provider - "local" or "deepgram" (optional, defaults to env or "local")
+ *   - Any other fields are stored as custom metadata
+ *
  * Example:
- *   curl -X POST -F "file=@myfile.wav" -F "title=My Recording" http://localhost:3000/files
+ *   curl -X POST -F "file=@myfile.wav" -F "provider=deepgram" http://localhost:3000/files
  */
 router.post(
   "/files",
@@ -74,10 +79,19 @@ router.post(
         return;
       }
 
-      // Extract custom metadata from form fields
+      // Extract provider from form fields (default to env or LOCAL)
+      const providerParam = req.body.provider as string | undefined;
+      let provider: Provider;
+      if (providerParam && Object.values(Provider).includes(providerParam as Provider)) {
+        provider = providerParam as Provider;
+      } else {
+        provider = getDefaultProvider();
+      }
+
+      // Extract custom metadata from form fields (excluding provider)
       const customMetadata: Record<string, string> = {};
       for (const [key, value] of Object.entries(req.body)) {
-        if (typeof value === "string") {
+        if (typeof value === "string" && key !== "provider") {
           customMetadata[key] = value;
         }
       }
@@ -97,6 +111,7 @@ router.post(
         fileSize: req.file.size,
         metadata: customMetadata,
         autoProcess: true,
+        provider,
       });
 
       // Also store in memory storage for backward compatibility with /list, /download
@@ -120,6 +135,7 @@ router.post(
         id: submission.id,
         filename: submission.filename,
         status: submission.status,
+        provider,
         message: "File uploaded and queued for processing",
       });
     } catch (error) {

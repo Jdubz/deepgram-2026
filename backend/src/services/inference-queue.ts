@@ -6,11 +6,12 @@
  * 2. Create inference jobs (transcribe, summarize)
  * 3. Query job and submission status
  *
- * Uses the same SQLite database as the Python worker.
+ * Uses SQLite for persistent job queue storage.
  */
 
 import Database from "better-sqlite3";
 import path from "path";
+import { Provider } from "../types/index.js";
 
 // Path to SQLite database (in backend/data/)
 const DB_PATH = path.resolve(__dirname, "../../data/queue.db");
@@ -18,14 +19,12 @@ const DB_PATH = path.resolve(__dirname, "../../data/queue.db");
 export type JobType = "transcribe" | "summarize";
 export type JobStatus = "pending" | "processing" | "completed" | "failed";
 export type SubmissionStatus = "pending" | "transcribing" | "summarizing" | "completed" | "failed";
-export type TranscribeProvider = "local" | "deepgram";
-export type SummarizeProvider = "local" | "openai" | "anthropic";
 
 export interface Job {
   id: number;
   job_type: JobType;
   status: JobStatus;
-  provider: string;
+  provider: Provider;
   input_file_path: string | null;
   input_text: string | null;
   output_text: string | null;
@@ -37,6 +36,8 @@ export interface Job {
   completed_at: string | null;
   processing_time_ms: number | null;
   model_used: string | null;
+  raw_response: string | null;
+  raw_response_type: string | null;
 }
 
 export interface AudioSubmission {
@@ -69,22 +70,22 @@ export interface CreateSubmissionParams {
   fileSize?: number;
   durationSeconds?: number;
   metadata?: Record<string, unknown>;
-  autoProcess?: boolean; // If true, auto-create transcribe job
-  transcribeProvider?: TranscribeProvider; // Provider for transcription (default: local)
+  autoProcess?: boolean;
+  provider?: Provider;
 }
 
 export interface CreateTranscribeJobParams {
   audioFilePath: string;
   audioFileId?: string;
   metadata?: Record<string, unknown>;
-  provider?: TranscribeProvider;
+  provider?: Provider;
 }
 
 export interface CreateSummarizeJobParams {
   text: string;
   audioFileId?: string;
   metadata?: Record<string, unknown>;
-  provider?: SummarizeProvider;
+  provider?: Provider;
 }
 
 export interface QueueStatus {
@@ -161,7 +162,7 @@ class InferenceQueueService {
         audioFilePath: params.filePath,
         audioFileId: params.id,
         metadata: { autoSummarize: true },
-        provider: params.transcribeProvider || "local",
+        provider: params.provider || Provider.LOCAL,
       });
 
       // Update status to pending (will be updated to transcribing when job starts)
@@ -223,7 +224,7 @@ class InferenceQueueService {
       params.audioFilePath,
       params.audioFileId || null,
       params.metadata ? JSON.stringify(params.metadata) : null,
-      params.provider || "local"
+      params.provider || Provider.LOCAL
     );
 
     return result.lastInsertRowid as number;
@@ -244,7 +245,7 @@ class InferenceQueueService {
       params.text,
       params.audioFileId || null,
       params.metadata ? JSON.stringify(params.metadata) : null,
-      params.provider || "local"
+      params.provider || Provider.LOCAL
     );
 
     return result.lastInsertRowid as number;
@@ -399,7 +400,7 @@ class InferenceQueueService {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         job_type TEXT NOT NULL CHECK(job_type IN ('transcribe', 'summarize')),
         status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
-        provider TEXT NOT NULL DEFAULT 'local',
+        provider TEXT NOT NULL DEFAULT 'local' CHECK(provider IN ('local', 'deepgram')),
         input_file_path TEXT,
         input_text TEXT,
         output_text TEXT,
@@ -410,7 +411,9 @@ class InferenceQueueService {
         started_at TEXT,
         completed_at TEXT,
         processing_time_ms INTEGER,
-        model_used TEXT
+        model_used TEXT,
+        raw_response TEXT,
+        raw_response_type TEXT
       );
 
       CREATE TABLE IF NOT EXISTS audio_submissions (
@@ -438,6 +441,27 @@ class InferenceQueueService {
       CREATE INDEX IF NOT EXISTS idx_jobs_audio_file_id ON jobs(audio_file_id);
       CREATE INDEX IF NOT EXISTS idx_submissions_status ON audio_submissions(status);
     `);
+
+    // Migration: add new columns if they don't exist (for existing databases)
+    this.migrateDatabase();
+  }
+
+  /**
+   * Run database migrations for existing databases
+   */
+  private migrateDatabase(): void {
+    const db = this.getDb();
+
+    // Check if raw_response column exists
+    const columns = db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[];
+    const columnNames = columns.map((c) => c.name);
+
+    if (!columnNames.includes("raw_response")) {
+      db.exec("ALTER TABLE jobs ADD COLUMN raw_response TEXT");
+    }
+    if (!columnNames.includes("raw_response_type")) {
+      db.exec("ALTER TABLE jobs ADD COLUMN raw_response_type TEXT");
+    }
   }
 
   /**
@@ -465,13 +489,14 @@ class InferenceQueueService {
   }
 
   /**
-   * Mark a job as completed with output
+   * Mark a job as completed with output and raw response
    */
   completeJob(
     jobId: number,
     outputText: string,
     modelUsed: string,
-    processingTimeMs: number
+    processingTimeMs: number,
+    rawResponse?: unknown
   ): void {
     const db = this.getDb();
 
@@ -481,11 +506,20 @@ class InferenceQueueService {
           output_text = ?,
           model_used = ?,
           processing_time_ms = ?,
+          raw_response = ?,
+          raw_response_type = ?,
           completed_at = datetime('now')
       WHERE id = ?
     `);
 
-    stmt.run(outputText, modelUsed, processingTimeMs, jobId);
+    stmt.run(
+      outputText,
+      modelUsed,
+      processingTimeMs,
+      rawResponse ? JSON.stringify(rawResponse) : null,
+      rawResponse ? typeof rawResponse : null,
+      jobId
+    );
   }
 
   /**

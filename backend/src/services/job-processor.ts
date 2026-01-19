@@ -7,12 +7,14 @@
  * Features:
  * - Single-job guarantee via mutex (GPU can only handle one model at a time)
  * - Atomic job claiming via SQLite
- * - Auto-chain: transcribe job → summarize job
+ * - Auto-chain: transcribe job -> summarize job
  * - Graceful shutdown (finishes current job before stopping)
+ * - Multi-provider support via provider factory
  */
 
-import { inferenceQueue, Job, SubmissionStatus } from "./inference-queue";
-import { localAI } from "./localai";
+import { Provider } from "../types/index.js";
+import { inferenceQueue, Job, SubmissionStatus } from "./inference-queue.js";
+import { getProvider } from "./provider-factory.js";
 
 export interface ProcessorStatus {
   isRunning: boolean;
@@ -125,7 +127,7 @@ class JobProcessorService {
       return;
     }
 
-    console.log(`[JobProcessor] Claimed job ${job.id} (${job.job_type})`);
+    console.log(`[JobProcessor] Claimed job ${job.id} (${job.job_type}, provider: ${job.provider})`);
 
     // Set processing state
     this.isProcessing = true;
@@ -178,21 +180,24 @@ class JobProcessorService {
       throw new Error("Transcribe job missing input_file_path");
     }
 
-    console.log(`[JobProcessor] Transcribing: ${job.input_file_path}`);
+    // Get the appropriate provider
+    const provider = getProvider(job.provider as Provider);
+    console.log(`[JobProcessor] Transcribing with ${provider.name}: ${job.input_file_path}`);
 
-    // Call LocalAI for transcription
-    const result = await localAI.transcribe(job.input_file_path);
+    // Call provider for transcription
+    const result = await provider.transcribe(job.input_file_path);
 
     console.log(
-      `[JobProcessor] Transcription complete (${result.processingTimeMs}ms)`
+      `[JobProcessor] Transcription complete (${result.processingTimeMs}ms, model: ${result.model})`
     );
 
-    // Mark job as completed
+    // Mark job as completed with raw response
     inferenceQueue.completeJob(
       job.id,
       result.text,
       result.model,
-      result.processingTimeMs
+      result.processingTimeMs,
+      result.rawResponse
     );
 
     // Update submission with transcript
@@ -208,11 +213,11 @@ class JobProcessorService {
       if (metadata.autoSummarize && result.text.trim()) {
         console.log(`[JobProcessor] Auto-creating summarize job for submission ${job.audio_file_id}`);
 
-        // Create summarize job
+        // Create summarize job with the same provider
         inferenceQueue.createSummarizeJob({
           text: result.text,
           audioFileId: job.audio_file_id,
-          provider: "local",
+          provider: job.provider as Provider,
         });
       } else if (!metadata.autoSummarize) {
         // No auto-summarize, mark submission as completed
@@ -229,23 +234,26 @@ class JobProcessorService {
       throw new Error("Summarize job missing input_text");
     }
 
+    // Get the appropriate provider
+    const provider = getProvider(job.provider as Provider);
     console.log(
-      `[JobProcessor] Summarizing (${job.input_text.length} chars)...`
+      `[JobProcessor] Summarizing with ${provider.name} (${job.input_text.length} chars)...`
     );
 
-    // Call LocalAI for summarization
-    const result = await localAI.summarize(job.input_text);
+    // Call provider for summarization
+    const result = await provider.summarize(job.input_text);
 
     console.log(
       `[JobProcessor] Summarization complete (${result.processingTimeMs}ms, ${result.tokensUsed} tokens)`
     );
 
-    // Mark job as completed
+    // Mark job as completed with raw response
     inferenceQueue.completeJob(
       job.id,
       result.text,
       result.model,
-      result.processingTimeMs
+      result.processingTimeMs,
+      result.rawResponse
     );
 
     // Update submission with summary and mark as completed

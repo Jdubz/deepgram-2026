@@ -1,10 +1,49 @@
 /**
  * Type definitions for the Audio Projects API
- *
- * STUDY EXERCISE: Review these types and understand how they map
- * to the API requirements from the interview prompt.
  */
 
+/**
+ * Provider enum - unified provider type for all inference operations
+ */
+export enum Provider {
+  LOCAL = "local",
+  DEEPGRAM = "deepgram",
+}
+
+/**
+ * Result of a transcription operation
+ */
+export interface TranscriptionResult {
+  text: string;
+  model: string;
+  processingTimeMs: number;
+  rawResponse: unknown;
+}
+
+/**
+ * Result of a summarization operation
+ */
+export interface SummarizationResult {
+  text: string;
+  model: string;
+  tokensUsed: number;
+  processingTimeMs: number;
+  rawResponse: unknown;
+}
+
+/**
+ * Provider interface - abstraction for inference providers
+ */
+export interface InferenceProvider {
+  name: Provider;
+  transcribe(audioFilePath: string): Promise<TranscriptionResult>;
+  summarize(text: string): Promise<SummarizationResult>;
+  healthCheck(): Promise<boolean>;
+}
+
+/**
+ * Audio file metadata
+ */
 export interface AudioMetadata {
   id: string;
   filename: string;
@@ -16,8 +55,13 @@ export interface AudioMetadata {
   sampleRate?: number;
   uploadedAt: Date;
   customMetadata: Record<string, string>;
+  transcription?: string;
+  summary?: string;
 }
 
+/**
+ * Audio file with content buffer
+ */
 export interface AudioFile {
   metadata: AudioMetadata;
   content: Buffer;
@@ -54,14 +98,8 @@ export interface AudioInfoResponse {
 }
 
 /**
- * TODO (Exercise 4 - Multi-Provider Architecture):
- * Define interfaces for LLM providers
+ * Legacy LLM response type (for backward compatibility with mock service)
  */
-export interface LLMProvider {
-  name: string;
-  // Add methods: summarize, etc.
-}
-
 export interface LLMResponse {
   text: string;
   tokensUsed: number;

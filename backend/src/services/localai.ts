@@ -11,19 +11,12 @@
 
 import fs from "fs";
 import path from "path";
-
-export interface TranscriptionResult {
-  text: string;
-  model: string;
-  processingTimeMs: number;
-}
-
-export interface SummaryResult {
-  text: string;
-  model: string;
-  tokensUsed: number;
-  processingTimeMs: number;
-}
+import {
+  Provider,
+  InferenceProvider,
+  TranscriptionResult,
+  SummarizationResult,
+} from "../types/index.js";
 
 export interface LocalAIConfig {
   baseUrl: string;
@@ -39,7 +32,8 @@ const DEFAULT_CONFIG: LocalAIConfig = {
   timeoutMs: 300000, // 5 minutes for long audio
 };
 
-class LocalAIService {
+class LocalAIService implements InferenceProvider {
+  public readonly name = Provider.LOCAL;
   private config: LocalAIConfig;
 
   constructor(config: Partial<LocalAIConfig> = {}) {
@@ -94,12 +88,13 @@ class LocalAIService {
         throw new Error(`LocalAI transcription failed: ${response.status} - ${error}`);
       }
 
-      const result = (await response.json()) as { text?: string };
+      const rawResponse = await response.json();
 
       return {
-        text: result.text || "",
+        text: (rawResponse as { text?: string }).text || "",
         model: this.config.whisperModel,
         processingTimeMs: Date.now() - startTime,
+        rawResponse,
       };
     } finally {
       clearTimeout(timeoutId);
@@ -110,7 +105,7 @@ class LocalAIService {
    * Generate summary using LocalAI's chat completions endpoint
    * POST /v1/chat/completions (OpenAI-compatible)
    */
-  async summarize(transcript: string): Promise<SummaryResult> {
+  async summarize(transcript: string): Promise<SummarizationResult> {
     const startTime = Date.now();
 
     const systemPrompt = `You are a helpful assistant that summarizes audio transcripts.
@@ -151,13 +146,14 @@ Keep the summary under 200 words.`;
         choices?: { message?: { content?: string } }[];
         usage?: { total_tokens?: number };
       }
-      const result = (await response.json()) as ChatCompletionResponse;
+      const rawResponse = (await response.json()) as ChatCompletionResponse;
 
       return {
-        text: result.choices?.[0]?.message?.content || "",
+        text: rawResponse.choices?.[0]?.message?.content || "",
         model: this.config.llmModel,
-        tokensUsed: result.usage?.total_tokens || 0,
+        tokensUsed: rawResponse.usage?.total_tokens || 0,
         processingTimeMs: Date.now() - startTime,
+        rawResponse,
       };
     } finally {
       clearTimeout(timeoutId);
