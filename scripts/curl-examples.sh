@@ -3,7 +3,7 @@
 # Curl Examples for Audio Projects API
 # These match the examples from the Deepgram interview prompt
 
-BASE_URL="http://localhost:3000"
+BASE_URL="${API_URL:-http://localhost:3001}"
 
 echo "=== Audio Projects API - Curl Examples ==="
 echo ""

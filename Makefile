@@ -1,7 +1,7 @@
 # Deepgram Audio API - Development Makefile
 
 .PHONY: help install dev dev-backend dev-frontend build build-backend build-frontend \
-        test clean db-reset db-status logs
+        test test-backend test-api curl-examples clean db-reset db-status logs
 
 # Default target
 help:
@@ -25,6 +25,8 @@ help:
 	@echo "Testing:"
 	@echo "  make test           Run all tests"
 	@echo "  make test-backend   Run backend tests"
+	@echo "  make test-api       Run API integration tests (requires running server)"
+	@echo "  make curl-examples  Show curl command examples"
 	@echo ""
 	@echo "Database:"
 	@echo "  make db-reset       Reset the SQLite database"
@@ -98,13 +100,23 @@ test-backend:
 	@echo "Running backend tests..."
 	cd backend && npm test
 
+test-api:
+	@echo "Running API integration tests..."
+	@chmod +x scripts/test-api.sh
+	./scripts/test-api.sh
+
+curl-examples:
+	@echo "Showing curl examples..."
+	@chmod +x scripts/curl-examples.sh
+	./scripts/curl-examples.sh
+
 # =============================================================================
 # Database
 # =============================================================================
 
 db-reset:
 	@echo "Resetting database..."
-	rm -f backend/data/queue.db backend/data/queue.db-wal backend/data/queue.db-shm
+	rm -f backend/data/deepgram.db backend/data/deepgram.db-wal backend/data/deepgram.db-shm
 	@echo "Database reset complete"
 
 db-status:
@@ -129,7 +141,7 @@ clean-all: clean
 
 clean-db:
 	@echo "Removing database and uploads..."
-	rm -f backend/data/queue.db backend/data/queue.db-wal backend/data/queue.db-shm
+	rm -f backend/data/deepgram.db backend/data/deepgram.db-wal backend/data/deepgram.db-shm
 	rm -rf backend/uploads/*
 	@echo "Database and uploads cleaned"
 

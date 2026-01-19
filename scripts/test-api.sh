@@ -3,7 +3,7 @@
 # Audio Projects API - Test Script
 # Tests all required endpoints from the Deepgram interview prompt
 
-BASE_URL="${API_URL:-http://localhost:3000}"
+BASE_URL="${API_URL:-http://localhost:3001}"
 TEST_AUDIO_DIR="./test-audio"
 
 echo "========================================"

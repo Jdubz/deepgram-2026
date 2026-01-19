@@ -14,7 +14,7 @@ import path from "path";
 import { Provider } from "../types/index.js";
 
 // Path to SQLite database (in backend/data/)
-const DB_PATH = path.resolve(__dirname, "../../data/queue.db");
+const DB_PATH = path.resolve(__dirname, "../../data/deepgram.db");
 
 export type JobType = "transcribe" | "summarize";
 export type JobStatus = "pending" | "processing" | "completed" | "failed";
