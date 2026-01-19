@@ -1,0 +1,9 @@
+# LLM Inference Worker Dependencies
+
+# Core
+faster-whisper>=1.0.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+
+# Note: Ollama is installed separately via system package
+# See: https://ollama.com/download

@@ -32,3 +32,13 @@ test-audio/
 # Temp files
 *.tmp
 *.temp
+
+# Uploads (runtime data)
+uploads/
+
+# LLM Inference runtime
+llm-inference/queue.db
+llm-inference/queue.db-wal
+llm-inference/queue.db-shm
+llm-inference/.env
+llm-inference/__pycache__/
