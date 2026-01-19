@@ -1,7 +1,11 @@
 # Deepgram Audio API - Development Makefile
 
-.PHONY: help install dev dev-backend dev-frontend build build-backend build-frontend \
-        test test-backend test-api curl-examples clean db-reset db-status logs
+.PHONY: help install install-backend install-frontend \
+        dev dev-backend dev-frontend build build-backend build-frontend \
+        test test-backend test-api curl-examples \
+        db-reset db-status \
+        clean clean-all clean-db logs \
+        test-health test-upload test-list
 
 # Default target
 help:
@@ -28,13 +32,19 @@ help:
 	@echo "  make test-api       Run API integration tests (requires running server)"
 	@echo "  make curl-examples  Show curl command examples"
 	@echo ""
+	@echo "Quick API Tests:"
+	@echo "  make test-health    Check server health"
+	@echo "  make test-upload FILE=audio.wav  Upload a file"
+	@echo "  make test-list      List all files"
+	@echo ""
 	@echo "Database:"
 	@echo "  make db-reset       Reset the SQLite database"
 	@echo "  make db-status      Show queue status"
 	@echo ""
 	@echo "Utilities:"
-	@echo "  make clean          Remove build artifacts and node_modules"
-	@echo "  make clean-db       Remove database files"
+	@echo "  make clean          Remove build artifacts (preserves node_modules)"
+	@echo "  make clean-all      Remove build artifacts and node_modules"
+	@echo "  make clean-db       Remove database and uploaded files"
 	@echo "  make logs           Tail backend logs"
 	@echo ""
 	@echo "Environment Variables:"
@@ -157,7 +167,12 @@ test-health:
 	@curl -s http://localhost:3001/health | jq .
 
 test-upload:
-	@echo "Upload a test file with: curl -X POST -F 'file=@yourfile.wav' http://localhost:3001/files"
+ifndef FILE
+	@echo "Usage: make test-upload FILE=path/to/audio.wav"
+	@echo "Optional: make test-upload FILE=path/to/audio.wav PROVIDER=deepgram"
+else
+	curl -X POST -F "file=@$(FILE)" $(if $(PROVIDER),-F "provider=$(PROVIDER)",) http://localhost:3001/files | jq .
+endif
 
 test-list:
 	@curl -s http://localhost:3001/list | jq .
