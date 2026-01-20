@@ -182,6 +182,7 @@ router.get("/list", async (req: Request, res: Response): Promise<void> => {
     const query: ListFilesQuery = {
       maxduration: parseNumericParam(req.query.maxduration, "maxduration", { min: 0 }),
       minduration: parseNumericParam(req.query.minduration, "minduration", { min: 0 }),
+      min_confidence: parseNumericParam(req.query.min_confidence, "min_confidence", { min: 0, max: 1 }),
       limit: parseNumericParam(req.query.limit, "limit", { min: 1, max: API_CONFIG.MAX_LIST_LIMIT })
         ?? API_CONFIG.DEFAULT_LIST_LIMIT,
       offset: parseNumericParam(req.query.offset, "offset", { min: 0 }) ?? 0,
@@ -191,6 +192,7 @@ router.get("/list", async (req: Request, res: Response): Promise<void> => {
     const { submissions, total } = inferenceQueue.getSubmissionsFiltered({
       maxDuration: query.maxduration,
       minDuration: query.minduration,
+      minConfidence: query.min_confidence,
       limit: query.limit,
       offset: query.offset,
     });
@@ -369,12 +371,14 @@ router.get("/info", async (req: Request, res: Response): Promise<void> => {
       transcriptError,
       transcriptProvider: transcriptJob?.provider || null,
       transcriptModel: transcriptJob?.model_used || null,
+      transcriptConfidence: submission.transcript_confidence || null,
       // Summary section
       summaryStatus,
       summary: summaryStatus === "completed" ? (submission.summary || "") : null,
       summaryError,
       summaryProvider: summaryJob?.provider || null,
       summaryModel: summaryJob?.model_used || null,
+      summaryConfidence: submission.summary_confidence || null,
     });
   } catch (error) {
     console.error("Info error:", error);

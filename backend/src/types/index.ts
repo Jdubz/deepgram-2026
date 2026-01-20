@@ -15,6 +15,7 @@ export enum Provider {
  */
 export interface TranscriptionResult {
   text: string;
+  confidence: number; // 0-1 overall confidence score
   model: string;
   processingTimeMs: number;
   rawResponse: unknown;
@@ -25,6 +26,7 @@ export interface TranscriptionResult {
  */
 export interface SummarizationResult {
   text: string;
+  confidence?: number; // 0-1 optional confidence score
   model: string;
   tokensUsed: number;
   processingTimeMs: number;
@@ -78,6 +80,7 @@ export interface UploadResponse {
 export interface ListFilesQuery {
   maxduration?: number;
   minduration?: number;
+  min_confidence?: number;
   limit?: number;
   offset?: number;
 }
@@ -99,10 +102,12 @@ export interface AudioInfoResponse {
   transcriptError: string | null;
   transcriptProvider: string | null;
   transcriptModel: string | null;
+  transcriptConfidence: number | null;
   // Summary job info
   summaryStatus: "pending" | "completed" | "failed";
   summary: string | null;
   summaryError: string | null;
   summaryProvider: string | null;
   summaryModel: string | null;
+  summaryConfidence: number | null;
 }

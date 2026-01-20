@@ -229,6 +229,7 @@ class JobProcessorService {
       result.text,
       result.model,
       result.processingTimeMs,
+      result.confidence,
       result.rawResponse
     );
 
@@ -237,7 +238,8 @@ class JobProcessorService {
       inferenceQueue.updateSubmissionTranscript(
         job.audio_file_id,
         result.text,
-        job.id
+        job.id,
+        result.confidence
       );
 
       // Check if auto-summarize is requested
@@ -312,6 +314,7 @@ class JobProcessorService {
       result.text,
       result.model,
       result.processingTimeMs,
+      result.confidence,
       result.rawResponse
     );
 
@@ -320,7 +323,8 @@ class JobProcessorService {
       inferenceQueue.updateSubmissionSummary(
         job.audio_file_id,
         result.text,
-        job.id
+        job.id,
+        result.confidence
       );
       inferenceQueue.updateSubmissionStatus(job.audio_file_id, "completed");
     }

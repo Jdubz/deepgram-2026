@@ -410,6 +410,7 @@ class InferenceQueueService {
     outputText: string,
     modelUsed: string,
     processingTimeMs: number,
+    confidence?: number,
     rawResponse?: unknown
   ): void {
     const db = this.getDb();
@@ -420,6 +421,7 @@ class InferenceQueueService {
           output_text = ?,
           model_used = ?,
           processing_time_ms = ?,
+          confidence = ?,
           raw_response = ?,
           raw_response_type = ?,
           completed_at = datetime('now')
@@ -430,6 +432,7 @@ class InferenceQueueService {
       outputText,
       modelUsed,
       processingTimeMs,
+      confidence ?? null,
       rawResponse ? JSON.stringify(rawResponse) : null,
       rawResponse ? typeof rawResponse : null,
       jobId
@@ -486,7 +489,8 @@ class InferenceQueueService {
   updateSubmissionTranscript(
     submissionId: string,
     transcript: string,
-    jobId: number
+    jobId: number,
+    confidence?: number
   ): void {
     const db = this.getDb();
 
@@ -494,12 +498,13 @@ class InferenceQueueService {
       UPDATE audio_submissions
       SET transcript = ?,
           transcript_job_id = ?,
+          transcript_confidence = ?,
           transcribed_at = datetime('now'),
           updated_at = datetime('now')
       WHERE id = ?
     `);
 
-    stmt.run(transcript, jobId, submissionId);
+    stmt.run(transcript, jobId, confidence ?? null, submissionId);
   }
 
   /**
@@ -508,7 +513,8 @@ class InferenceQueueService {
   updateSubmissionSummary(
     submissionId: string,
     summary: string,
-    jobId: number
+    jobId: number,
+    confidence?: number
   ): void {
     const db = this.getDb();
 
@@ -516,12 +522,13 @@ class InferenceQueueService {
       UPDATE audio_submissions
       SET summary = ?,
           summary_job_id = ?,
+          summary_confidence = ?,
           summarized_at = datetime('now'),
           updated_at = datetime('now')
       WHERE id = ?
     `);
 
-    stmt.run(summary, jobId, submissionId);
+    stmt.run(summary, jobId, confidence ?? null, submissionId);
   }
 
   /**
@@ -541,6 +548,7 @@ class InferenceQueueService {
   getSubmissionsFiltered(query: {
     maxDuration?: number;
     minDuration?: number;
+    minConfidence?: number;
     limit?: number;
     offset?: number;
   }): { submissions: AudioSubmission[]; total: number } {
@@ -557,6 +565,10 @@ class InferenceQueueService {
     if (query.minDuration !== undefined) {
       conditions.push("duration_seconds >= ?");
       params.push(query.minDuration);
+    }
+    if (query.minConfidence !== undefined) {
+      conditions.push("transcript_confidence >= ?");
+      params.push(query.minConfidence);
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";

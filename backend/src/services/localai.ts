@@ -95,6 +95,7 @@ class LocalAIService implements InferenceProvider {
 
       return {
         text: (rawResponse as { text?: string }).text || "",
+        confidence: 0.85, // LocalAI doesn't provide confidence, use reasonable default
         model: this.config.whisperModel,
         processingTimeMs: Date.now() - startTime,
         rawResponse,
@@ -146,6 +147,7 @@ class LocalAIService implements InferenceProvider {
 
       return {
         text: rawResponse.choices?.[0]?.message?.content || "",
+        confidence: 0.80, // Optional: LocalAI doesn't provide confidence for summaries
         model: this.config.llmModel,
         tokensUsed: rawResponse.usage?.total_tokens || 0,
         processingTimeMs: Date.now() - startTime,

@@ -108,12 +108,15 @@ class DeepgramService implements InferenceProvider {
       const dgResponse = rawResponse as DeepgramTranscriptionResponse;
       const transcript =
         dgResponse.results?.channels?.[0]?.alternatives?.[0]?.transcript || "";
+      const confidence =
+        dgResponse.results?.channels?.[0]?.alternatives?.[0]?.confidence || 0;
       const modelName =
         dgResponse.metadata?.model_info?.name ||
         `deepgram-${this.config.transcriptionModel}`;
 
       return {
         text: transcript,
+        confidence,
         model: modelName,
         processingTimeMs: Date.now() - startTime,
         rawResponse,
