@@ -19,6 +19,7 @@ import audioRoutes from "./routes/audio.js";
 import { jobProcessor } from "./services/job-processor.js";
 import { inferenceQueue } from "./services/inference-queue.js";
 import { localAI } from "./services/localai.js";
+import { deepgram } from "./services/deepgram.js";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -39,6 +40,10 @@ app.get("/health", async (_req, res) => {
       localAI: {
         healthy: localAIHealthy,
         config: localAI.getConfig(),
+      },
+      deepgram: {
+        configured: !!process.env.DEEPGRAM_API_KEY,
+        config: deepgram.getConfig(),
       },
       jobProcessor: processorStatus,
     },

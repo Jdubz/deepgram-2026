@@ -113,6 +113,88 @@ curl "http://localhost:3001/queue/status"
 curl "http://localhost:3001/health"
 ```
 
+## Provider Selection
+
+The API supports multiple AI providers for transcription and summarization:
+
+### Available Providers
+
+- **local** (default): LocalAI with Whisper + Llama models - Runs locally, no API key required
+- **deepgram**: Deepgram API - Cloud-based, requires API key, higher accuracy with confidence scores
+
+### Usage
+
+```bash
+# Use Deepgram provider (requires DEEPGRAM_API_KEY environment variable)
+curl -X POST -F "file=@audio.wav" -F "provider=deepgram" http://localhost:3001/files
+
+# Use LocalAI provider (default)
+curl -X POST -F "file=@audio.wav" http://localhost:3001/files
+
+# Explicitly specify local provider
+curl -X POST -F "file=@audio.wav" -F "provider=local" http://localhost:3001/files
+```
+
+### Configuration
+
+Set environment variables to configure providers:
+
+```bash
+# Deepgram Configuration (Optional - for cloud-based transcription)
+export DEEPGRAM_API_KEY=your_api_key_here
+export DEEPGRAM_MODEL=nova-2              # or nova-3 for latest model
+export DEEPGRAM_LANGUAGE=en
+
+# LocalAI Configuration (for local transcription)
+export LOCALAI_URL=http://localhost:8080
+export LOCALAI_WHISPER_MODEL=whisper-1
+export LOCALAI_LLM_MODEL=llama3
+
+# Default Provider Selection
+export DEFAULT_PROVIDER=local              # or 'deepgram'
+```
+
+### Check Provider Status
+
+The `/health` endpoint shows which providers are configured:
+
+```bash
+curl http://localhost:3001/health | jq
+```
+
+Response:
+```json
+{
+  "status": "ok",
+  "services": {
+    "localAI": {
+      "healthy": true,
+      "config": { "whisperModel": "whisper-1", "llmModel": "llama3" }
+    },
+    "deepgram": {
+      "configured": true,
+      "config": { "transcriptionModel": "nova-2", "language": "en" }
+    },
+    "jobProcessor": {
+      "isRunning": true,
+      "isProcessing": false
+    }
+  }
+}
+```
+
+### Provider Comparison
+
+| Feature | LocalAI | Deepgram |
+|---------|---------|----------|
+| Cost | Free (local GPU/CPU) | Pay per usage |
+| Setup | Docker required | API key only |
+| Latency | Depends on hardware | Fast (cloud) |
+| Accuracy | Good (Whisper) | Excellent (Nova-2/3) |
+| Confidence Scores | Estimated | Real per-word scores |
+| Languages | 99+ (Whisper) | 36+ optimized |
+| Streaming | No | Yes (coming soon) |
+
 ## Project Structure
 
 ```
