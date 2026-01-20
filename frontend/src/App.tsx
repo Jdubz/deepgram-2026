@@ -176,6 +176,8 @@ function App() {
           }}
         />
 
+        <StreamBroadcast />
+
         <FilesList
           files={files}
           maxDuration={maxDuration}
@@ -193,8 +195,6 @@ function App() {
           onToggleExpand={() => setQueueExpanded(!queueExpanded)}
           isConnected={isConnected}
         />
-
-        <StreamBroadcast />
       </div>
 
       {/* Watch Tab - kept mounted to preserve connection */}
