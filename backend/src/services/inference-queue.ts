@@ -34,6 +34,7 @@ export interface Job {
   completed_at: string | null;
   processing_time_ms: number | null;
   model_used: string | null;
+  confidence: number | null;
   raw_response: string | null;
   raw_response_type: string | null;
 }
@@ -48,9 +49,11 @@ export interface AudioSubmission {
   duration_seconds: number | null;
   transcript: string | null;
   transcript_job_id: number | null;
+  transcript_confidence: number | null;
   transcribed_at: string | null;
   summary: string | null;
   summary_job_id: number | null;
+  summary_confidence: number | null;
   summarized_at: string | null;
   status: SubmissionStatus;
   error_message: string | null;

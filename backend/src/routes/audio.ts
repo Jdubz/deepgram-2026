@@ -170,11 +170,12 @@ router.post(
  * Query parameters:
  *   - maxduration: Maximum duration in seconds
  *   - minduration: Minimum duration in seconds
+ *   - min_confidence: Minimum transcript confidence (0-1)
  *   - limit: Max number of results (default: 100)
  *   - offset: Offset for pagination (default: 0)
  *
  * Example:
- *   curl http://localhost:3000/list?maxduration=300
+ *   curl http://localhost:3001/list?maxduration=300&min_confidence=0.85
  */
 router.get("/list", async (req: Request, res: Response): Promise<void> => {
   try {
@@ -206,6 +207,8 @@ router.get("/list", async (req: Request, res: Response): Promise<void> => {
       size: s.file_size || 0,
       mimeType: s.mime_type || "audio/unknown",
       uploadedAt: s.created_at,
+      transcriptConfidence: s.transcript_confidence,
+      summaryConfidence: s.summary_confidence,
     }));
 
     const response = {
