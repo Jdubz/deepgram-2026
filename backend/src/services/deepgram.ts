@@ -14,6 +14,7 @@ import {
   TranscriptionResult,
   SummarizationResult,
 } from "../types/index.js";
+import { AUDIO_CONTENT_TYPE_MAP } from "../constants.js";
 
 export interface DeepgramConfig {
   apiKey: string;
@@ -55,15 +56,7 @@ class DeepgramService implements InferenceProvider {
 
     // Determine content type from extension
     const ext = path.extname(audioFilePath).toLowerCase();
-    const contentTypes: Record<string, string> = {
-      ".wav": "audio/wav",
-      ".mp3": "audio/mpeg",
-      ".flac": "audio/flac",
-      ".ogg": "audio/ogg",
-      ".m4a": "audio/mp4",
-      ".webm": "audio/webm",
-    };
-    const contentType = contentTypes[ext] || "audio/wav";
+    const contentType = AUDIO_CONTENT_TYPE_MAP[ext] || "audio/wav";
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.config.timeoutMs);

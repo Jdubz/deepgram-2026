@@ -93,16 +93,16 @@ export interface AudioInfoResponse {
   filename: string;
   duration: number;
   size: number;
-  summary: string;
-  transcript?: string;
-}
-
-/**
- * Legacy LLM response type (for backward compatibility with mock service)
- */
-export interface LLMResponse {
-  text: string;
-  tokensUsed: number;
-  model: string;
-  latencyMs: number;
+  // Transcript job info
+  transcriptStatus: "pending" | "completed" | "failed";
+  transcript: string | null;
+  transcriptError: string | null;
+  transcriptProvider: string | null;
+  transcriptModel: string | null;
+  // Summary job info
+  summaryStatus: "pending" | "completed" | "failed";
+  summary: string | null;
+  summaryError: string | null;
+  summaryProvider: string | null;
+  summaryModel: string | null;
 }

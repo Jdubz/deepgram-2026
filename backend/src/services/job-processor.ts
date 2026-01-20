@@ -18,7 +18,7 @@
 import { Provider } from "../types/index.js";
 import { inferenceQueue, Job, SubmissionStatus } from "./inference-queue.js";
 import { getProvider } from "./provider-factory.js";
-import { localAI, LocalAIService } from "./localai.js";
+import { LocalAIService } from "./localai.js";
 
 export interface ProcessorStatus {
   isRunning: boolean;

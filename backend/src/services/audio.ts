@@ -1,41 +1,24 @@
 /**
  * Audio Processing Service
  *
- * Handles audio file validation and metadata extraction.
+ * Handles audio file validation and metadata extraction using the music-metadata library.
+ * Supports various audio formats including WAV, MP3, FLAC, OGG, and more.
  *
- * STUDY EXERCISES:
- * - Exercise 8: Implement robust file validation
- * - Understand audio formats and metadata
+ * Features:
+ * - File size validation
+ * - Audio metadata extraction (duration, channels, sample rate)
+ * - FLAC-specific duration parsing for files with missing metadata
+ * - Duration estimation fallback based on file size and codec
+ * - Filename sanitization for security
  */
 
 import { parseBuffer } from "music-metadata";
 import { AudioMetadata } from "../types/index.js";
-import { v4 as uuidv4 } from "uuid";
-
-// Allowed MIME types for audio files
-const ALLOWED_MIME_TYPES = new Set([
-  "audio/wav",
-  "audio/x-wav",
-  "audio/mpeg",
-  "audio/mp3",
-  "audio/ogg",
-  "audio/flac",
-  "audio/webm",
-  "audio/mp4",
-  "audio/aac",
-]);
-
-// Max file size: 100MB
-const MAX_FILE_SIZE = 100 * 1024 * 1024;
-
-// Average bitrates for duration estimation (bits per second)
-const AVERAGE_BITRATES: Record<string, number> = {
-  "FLAC": 800000,      // ~800 kbps for CD-quality FLAC
-  "MP3": 192000,       // 192 kbps average
-  "OGG": 160000,       // 160 kbps average
-  "AAC": 128000,       // 128 kbps average
-  "WAV": 1411200,      // CD-quality uncompressed (44.1kHz * 16bit * 2ch)
-};
+import {
+  MAX_FILE_SIZE_BYTES,
+  ALLOWED_AUDIO_MIME_TYPES,
+  AVERAGE_AUDIO_BITRATES,
+} from "../constants.js";
 
 export interface ValidationResult {
   valid: boolean;
@@ -96,23 +79,25 @@ export const audioService = {
     }
 
     // For compressed formats, estimate using average bitrate
-    const bitrate = AVERAGE_BITRATES[codec] || 256000;
+    const bitrate = AVERAGE_AUDIO_BITRATES[codec] || 256000;
     return (fileSize * 8) / bitrate;
   },
 
   /**
    * Validate and extract metadata from an audio buffer
+   * @param id - Unique identifier for this audio file (provided by caller)
    */
   async validateAndExtract(
+    id: string,
     buffer: Buffer,
     originalFilename: string,
     customMetadata: Record<string, string> = {}
   ): Promise<ValidationResult> {
     // Check file size
-    if (buffer.length > MAX_FILE_SIZE) {
+    if (buffer.length > MAX_FILE_SIZE_BYTES) {
       return {
         valid: false,
-        error: `File too large. Maximum size is ${MAX_FILE_SIZE / 1024 / 1024}MB`,
+        error: `File too large. Maximum size is ${MAX_FILE_SIZE_BYTES / 1024 / 1024}MB`,
       };
     }
 
@@ -147,7 +132,6 @@ export const audioService = {
         console.log(`[AudioService] Estimated duration for ${originalFilename}: ${duration.toFixed(2)}s (codec: ${codec})`);
       }
 
-      const id = uuidv4();
       const sanitizedFilename = this.sanitizeFilename(originalFilename);
 
       const metadata: AudioMetadata = {
@@ -173,15 +157,20 @@ export const audioService = {
   },
 
   /**
-   * Sanitize filename to prevent security issues
+   * Sanitize filename to prevent path traversal and injection attacks.
+   * Strips path components and replaces dangerous characters with underscores.
    *
-   * TODO (Exercise 8): Make this more robust
+   * Note: For production, consider additional validation:
+   * - Maximum filename length
+   * - Reserved names (CON, PRN, etc. on Windows)
+   * - Unicode normalization
+   * - Null byte injection prevention
    */
   sanitizeFilename(filename: string): string {
-    // Remove path components
+    // Remove path components (prevents path traversal attacks)
     const basename = filename.split(/[/\\]/).pop() || filename;
 
-    // Remove dangerous characters
+    // Replace dangerous characters with underscores
     return basename.replace(/[^a-zA-Z0-9._-]/g, "_");
   },
 
@@ -189,6 +178,6 @@ export const audioService = {
    * Check if a MIME type is allowed
    */
   isAllowedMimeType(mimeType: string): boolean {
-    return ALLOWED_MIME_TYPES.has(mimeType.toLowerCase());
+    return ALLOWED_AUDIO_MIME_TYPES.has(mimeType.toLowerCase());
   },
 };

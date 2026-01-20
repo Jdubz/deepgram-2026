@@ -28,7 +28,7 @@ app.use(cors());
 app.use(express.json());
 
 // Health check endpoint with service status
-app.get("/health", async (req, res) => {
+app.get("/health", async (_req, res) => {
   const localAIHealthy = await localAI.healthCheck();
   const processorStatus = jobProcessor.getStatus();
 
@@ -46,7 +46,7 @@ app.get("/health", async (req, res) => {
 });
 
 // Queue status endpoint
-app.get("/queue/status", (req, res) => {
+app.get("/queue/status", (_req, res) => {
   const queueStatus = inferenceQueue.getQueueStatus();
   const processorStatus = jobProcessor.getStatus();
 
@@ -60,12 +60,12 @@ app.get("/queue/status", (req, res) => {
 app.use("/", audioRoutes);
 
 // 404 handler
-app.use((req, res) => {
+app.use((_req, res) => {
   res.status(404).json({ error: "Not found" });
 });
 
-// Error handler
-app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
+// Error handler (must have 4 params for Express to recognize it as error handler)
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error("Unhandled error:", err);
   res.status(500).json({ error: "Internal server error" });
 });

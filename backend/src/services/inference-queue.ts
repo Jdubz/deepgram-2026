@@ -719,8 +719,6 @@ class InferenceQueueService {
    * Recover a stuck job by marking it as failed
    */
   recoverStuckJob(jobId: number, reason: string): void {
-    const db = this.getDb();
-
     const job = this.getJob(jobId);
     if (!job) return;
 

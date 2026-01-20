@@ -19,6 +19,7 @@ backend/.env
 
 # OS
 .DS_Store
+._*
 Thumbs.db
 
 # Logs
@@ -51,3 +52,6 @@ models/*.gguf
 models/*.bin
 models/*.safetensors
 models/*.onnx
+
+# Cloudflare tunnel credentials
+cloudflared/credentials.json

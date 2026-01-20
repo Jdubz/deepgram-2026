@@ -16,12 +16,34 @@ import { v4 as uuidv4 } from "uuid";
 import { audioService } from "../services/audio.js";
 import { inferenceQueue } from "../services/inference-queue.js";
 import { getDefaultProvider } from "../services/provider-factory.js";
-import {
-  Provider,
-  ListFilesQuery,
-  ListFilesResponse,
-  AudioInfoResponse,
-} from "../types/index.js";
+import { Provider, ListFilesQuery } from "../types/index.js";
+import { MAX_FILE_SIZE_BYTES, API_CONFIG } from "../constants.js";
+
+/**
+ * Parse and validate a numeric query parameter
+ * Returns undefined if the parameter is missing, or the validated number
+ * Throws an error if the parameter is invalid (NaN or negative)
+ */
+function parseNumericParam(
+  value: unknown,
+  name: string,
+  options: { min?: number; max?: number } = {}
+): number | undefined {
+  if (value === undefined || value === "") {
+    return undefined;
+  }
+  const num = Number(value);
+  if (isNaN(num)) {
+    throw new Error(`Invalid ${name}: must be a number`);
+  }
+  if (options.min !== undefined && num < options.min) {
+    throw new Error(`Invalid ${name}: must be at least ${options.min}`);
+  }
+  if (options.max !== undefined && num > options.max) {
+    throw new Error(`Invalid ${name}: must be at most ${options.max}`);
+  }
+  return num;
+}
 
 const router = Router();
 
@@ -35,10 +57,10 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 
 // Configure multer for disk storage
 const diskStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
+  destination: (_req, _file, cb) => {
     cb(null, UPLOAD_DIR);
   },
-  filename: (req, file, cb) => {
+  filename: (_req, file, cb) => {
     const id = uuidv4();
     const ext = path.extname(file.originalname);
     cb(null, `${id}${ext}`);
@@ -48,7 +70,7 @@ const diskStorage = multer.diskStorage({
 const upload = multer({
   storage: diskStorage,
   limits: {
-    fileSize: 100 * 1024 * 1024, // 100MB limit
+    fileSize: MAX_FILE_SIZE_BYTES,
   },
 });
 
@@ -106,6 +128,7 @@ router.post(
       // Extract duration from audio file for filtering support
       const fileContent = fs.readFileSync(filePath);
       const audioResult = await audioService.validateAndExtract(
+        id,
         fileContent,
         req.file.originalname,
         customMetadata
@@ -155,11 +178,13 @@ router.post(
  */
 router.get("/list", async (req: Request, res: Response): Promise<void> => {
   try {
+    // Validate query parameters
     const query: ListFilesQuery = {
-      maxduration: req.query.maxduration ? Number(req.query.maxduration) : undefined,
-      minduration: req.query.minduration ? Number(req.query.minduration) : undefined,
-      limit: req.query.limit ? Number(req.query.limit) : 100,
-      offset: req.query.offset ? Number(req.query.offset) : 0,
+      maxduration: parseNumericParam(req.query.maxduration, "maxduration", { min: 0 }),
+      minduration: parseNumericParam(req.query.minduration, "minduration", { min: 0 }),
+      limit: parseNumericParam(req.query.limit, "limit", { min: 1, max: API_CONFIG.MAX_LIST_LIMIT })
+        ?? API_CONFIG.DEFAULT_LIST_LIMIT,
+      offset: parseNumericParam(req.query.offset, "offset", { min: 0 }) ?? 0,
     };
 
     // Query SQLite with filtering and pagination
@@ -171,6 +196,7 @@ router.get("/list", async (req: Request, res: Response): Promise<void> => {
     });
 
     // Map submissions to the expected response format
+    // Note: status is not included since files only exist if successfully uploaded
     const files = submissions.map((s) => ({
       id: s.id,
       filename: s.original_filename || s.filename,
@@ -178,18 +204,22 @@ router.get("/list", async (req: Request, res: Response): Promise<void> => {
       size: s.file_size || 0,
       mimeType: s.mime_type || "audio/unknown",
       uploadedAt: s.created_at,
-      status: s.status,
     }));
 
     const response = {
       files,
       total,
-      limit: query.limit || 100,
-      offset: query.offset || 0,
+      limit: query.limit ?? API_CONFIG.DEFAULT_LIST_LIMIT,
+      offset: query.offset ?? 0,
     };
 
     res.json(response);
   } catch (error) {
+    // Return 400 for validation errors, 500 for internal errors
+    if (error instanceof Error && error.message.startsWith("Invalid ")) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
     console.error("List error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
@@ -282,29 +312,7 @@ router.get("/info", async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    // If still processing, return status
-    if (submission.status !== "completed" && submission.status !== "failed") {
-      res.json({
-        id: submission.id,
-        filename: submission.original_filename || submission.filename,
-        status: submission.status,
-        message: `Processing: ${submission.status}`,
-      });
-      return;
-    }
-
-    // If failed, return error
-    if (submission.status === "failed") {
-      res.json({
-        id: submission.id,
-        filename: submission.original_filename || submission.filename,
-        status: "failed",
-        error: submission.error_message,
-      });
-      return;
-    }
-
-    // Get job details for provider/model info
+    // Get job details for status and provider/model info
     const transcriptJob = submission.transcript_job_id
       ? inferenceQueue.getJob(submission.transcript_job_id)
       : null;
@@ -312,15 +320,45 @@ router.get("/info", async (req: Request, res: Response): Promise<void> => {
       ? inferenceQueue.getJob(submission.summary_job_id)
       : null;
 
-    // Return completed submission info with provider details
+    // Determine transcript status
+    let transcriptStatus: "pending" | "completed" | "failed" = "pending";
+    let transcriptError: string | null = null;
+    if (transcriptJob) {
+      if (transcriptJob.status === "completed") {
+        transcriptStatus = "completed";
+      } else if (transcriptJob.status === "failed") {
+        transcriptStatus = "failed";
+        transcriptError = transcriptJob.error_message || "Unknown error";
+      }
+    }
+
+    // Determine summary status
+    let summaryStatus: "pending" | "completed" | "failed" = "pending";
+    let summaryError: string | null = null;
+    if (summaryJob) {
+      if (summaryJob.status === "completed") {
+        summaryStatus = "completed";
+      } else if (summaryJob.status === "failed") {
+        summaryStatus = "failed";
+        summaryError = summaryJob.error_message || "Unknown error";
+      }
+    }
+
+    // Always return file info with job-specific statuses
     res.json({
       filename: submission.original_filename || submission.filename,
       duration: submission.duration_seconds || 0,
       size: submission.file_size || 0,
-      transcript: submission.transcript || "",
+      // Transcript section
+      transcriptStatus,
+      transcript: transcriptStatus === "completed" ? (submission.transcript || "") : null,
+      transcriptError,
       transcriptProvider: transcriptJob?.provider || null,
       transcriptModel: transcriptJob?.model_used || null,
-      summary: submission.summary || "",
+      // Summary section
+      summaryStatus,
+      summary: summaryStatus === "completed" ? (submission.summary || "") : null,
+      summaryError,
       summaryProvider: summaryJob?.provider || null,
       summaryModel: summaryJob?.model_used || null,
     });
@@ -367,7 +405,8 @@ router.get("/files/:id", async (req: Request, res: Response): Promise<void> => {
  * Delete a file by ID.
  * Also deletes associated jobs and the file from disk.
  *
- * TODO (Exercise 7): Add authentication check
+ * Note: In production, this endpoint should require authentication
+ * to prevent unauthorized deletion of files.
  */
 router.delete("/files/:id", async (req: Request, res: Response): Promise<void> => {
   try {

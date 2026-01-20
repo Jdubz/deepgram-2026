@@ -22,6 +22,7 @@ import {
   TranscriptionResult,
   SummarizationResult,
 } from "../types/index.js";
+import { AUDIO_CONTENT_TYPE_MAP, SUMMARIZATION_SYSTEM_PROMPT } from "../constants.js";
 
 /**
  * Heartbeat callback for tracking job progress during streaming
@@ -63,15 +64,7 @@ class LocalAIService implements InferenceProvider {
 
     // Determine MIME type from extension
     const ext = path.extname(audioFilePath).toLowerCase();
-    const mimeTypes: Record<string, string> = {
-      ".wav": "audio/wav",
-      ".mp3": "audio/mpeg",
-      ".flac": "audio/flac",
-      ".ogg": "audio/ogg",
-      ".m4a": "audio/mp4",
-      ".webm": "audio/webm",
-    };
-    const mimeType = mimeTypes[ext] || "audio/wav";
+    const mimeType = AUDIO_CONTENT_TYPE_MAP[ext] || "audio/wav";
 
     // Create FormData with file
     const formData = new FormData();
@@ -118,13 +111,6 @@ class LocalAIService implements InferenceProvider {
   async summarize(transcript: string): Promise<SummarizationResult> {
     const startTime = Date.now();
 
-    const systemPrompt = `You are a helpful assistant that summarizes audio transcripts.
-Provide a concise summary including:
-- Main topics discussed
-- Key points and takeaways
-- Overall sentiment/tone
-Keep the summary under 200 words.`;
-
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.config.timeoutMs);
 
@@ -137,7 +123,7 @@ Keep the summary under 200 words.`;
           body: JSON.stringify({
             model: this.config.llmModel,
             messages: [
-              { role: "system", content: systemPrompt },
+              { role: "system", content: SUMMARIZATION_SYSTEM_PROMPT },
               { role: "user", content: `Summarize this transcript:\n\n${transcript}` },
             ],
             temperature: 0.3,
@@ -264,13 +250,6 @@ Keep the summary under 200 words.`;
       );
     }
 
-    const systemPrompt = `You are a helpful assistant that summarizes audio transcripts.
-Provide a concise summary including:
-- Main topics discussed
-- Key points and takeaways
-- Overall sentiment/tone
-Keep the summary under 200 words.`;
-
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.config.timeoutMs);
 
@@ -283,7 +262,7 @@ Keep the summary under 200 words.`;
           body: JSON.stringify({
             model: this.config.llmModel,
             messages: [
-              { role: "system", content: systemPrompt },
+              { role: "system", content: SUMMARIZATION_SYSTEM_PROMPT },
               { role: "user", content: `Summarize this transcript:\n\n${transcript}` },
             ],
             temperature: 0.3,
