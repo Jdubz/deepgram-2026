@@ -66,9 +66,10 @@ function ConfidenceBadge({ confidence, label }: { confidence: number | null | un
 interface FileInfoModalProps {
   fileInfo: FileInfo
   onClose: () => void
+  onDownload: (filename: string) => void
 }
 
-export function FileInfoModal({ fileInfo, onClose }: FileInfoModalProps) {
+export function FileInfoModal({ fileInfo, onClose, onDownload }: FileInfoModalProps) {
   return (
     <section
       style={{
@@ -212,9 +213,17 @@ export function FileInfoModal({ fileInfo, onClose }: FileInfoModalProps) {
           )}
         </div>
 
-        <button onClick={onClose} style={{ marginTop: '12px', padding: '8px 16px' }}>
-          Close
-        </button>
+        <div style={{ marginTop: '16px', display: 'flex', gap: '8px' }}>
+          <button
+            onClick={() => onDownload(fileInfo.filename)}
+            style={{ padding: '8px 16px', background: '#1976d2', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+          >
+            Download
+          </button>
+          <button onClick={onClose} style={{ padding: '8px 16px' }}>
+            Close
+          </button>
+        </div>
       </div>
     </section>
   )

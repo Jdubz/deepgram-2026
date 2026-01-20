@@ -42,7 +42,6 @@ interface FilesListProps {
   onMaxDurationChange: (value: string) => void
   onMinConfidenceChange: (value: string) => void
   onRefresh: () => void
-  onDownload: (filename: string) => void
   onGetInfo: (id: string) => void
 }
 
@@ -53,7 +52,6 @@ export function FilesList({
   onMaxDurationChange,
   onMinConfidenceChange,
   onRefresh,
-  onDownload,
   onGetInfo,
 }: FilesListProps) {
   return (
@@ -115,13 +113,7 @@ export function FilesList({
                     <ConfidenceCell confidence={file.transcriptConfidence} />
                   </td>
                   <td style={{ padding: '10px' }}>
-                    <button
-                      onClick={() => onDownload(file.filename)}
-                      style={{ marginRight: '8px' }}
-                    >
-                      Download
-                    </button>
-                    <button onClick={() => onGetInfo(file.id)}>Get Info</button>
+                    <button onClick={() => onGetInfo(file.id)}>Details</button>
                   </td>
                 </tr>
               ))}

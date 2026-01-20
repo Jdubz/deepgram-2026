@@ -128,7 +128,6 @@ function App() {
         onMaxDurationChange={setMaxDuration}
         onMinConfidenceChange={setMinConfidence}
         onRefresh={fetchFiles}
-        onDownload={handleDownload}
         onGetInfo={handleGetInfo}
       />
 
@@ -140,7 +139,7 @@ function App() {
         onRefresh={fetchJobs}
       />
 
-      {fileInfo && <FileInfoModal fileInfo={fileInfo} onClose={() => setFileInfo(null)} />}
+      {fileInfo && <FileInfoModal fileInfo={fileInfo} onClose={() => setFileInfo(null)} onDownload={handleDownload} />}
     </div>
   )
 }
