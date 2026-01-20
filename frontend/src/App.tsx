@@ -18,6 +18,7 @@ function App() {
   const [message, setMessage] = useState('')
   const [fileInfo, setFileInfo] = useState<FileInfo | null>(null)
   const [maxDuration, setMaxDuration] = useState('')
+  const [minConfidence, setMinConfidence] = useState('')
   const [jobs, setJobs] = useState<Job[]>([])
   const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null)
   const [queueExpanded, setQueueExpanded] = useState(false)
@@ -27,6 +28,8 @@ function App() {
     try {
       const params = new URLSearchParams()
       if (maxDuration) params.set('maxduration', maxDuration)
+      // Convert percentage (0-100) to decimal (0-1) for API
+      if (minConfidence) params.set('min_confidence', String(Number(minConfidence) / 100))
 
       const res = await fetch(`${API_BASE}/list?${params}`)
       const data = await res.json()
@@ -50,7 +53,7 @@ function App() {
   useEffect(() => {
     fetchFiles()
     fetchJobs()
-  }, [maxDuration])
+  }, [maxDuration, minConfidence])
 
   // Auto-refresh jobs when queue is expanded
   useEffect(() => {
@@ -121,7 +124,9 @@ function App() {
       <FilesList
         files={files}
         maxDuration={maxDuration}
+        minConfidence={minConfidence}
         onMaxDurationChange={setMaxDuration}
+        onMinConfidenceChange={setMinConfidence}
         onRefresh={fetchFiles}
         onDownload={handleDownload}
         onGetInfo={handleGetInfo}

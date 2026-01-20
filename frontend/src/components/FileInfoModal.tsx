@@ -11,12 +11,56 @@ export interface FileInfo {
   transcriptError?: string | null
   transcriptProvider?: string | null
   transcriptModel?: string | null
+  transcriptConfidence?: number | null
   // Summary job info
   summaryStatus: 'pending' | 'completed' | 'failed'
   summary?: string | null
   summaryError?: string | null
   summaryProvider?: string | null
   summaryModel?: string | null
+  summaryConfidence?: number | null
+}
+
+// Visual confidence indicator component
+function ConfidenceBadge({ confidence, label }: { confidence: number | null | undefined; label: string }) {
+  if (confidence === null || confidence === undefined) return null
+
+  const percentage = Math.round(confidence * 100)
+  const getColor = () => {
+    if (percentage >= 90) return { bg: '#e8f5e9', text: '#2e7d32', bar: '#4caf50' }
+    if (percentage >= 70) return { bg: '#fff3e0', text: '#ef6c00', bar: '#ff9800' }
+    return { bg: '#ffebee', text: '#c62828', bar: '#f44336' }
+  }
+  const colors = getColor()
+
+  return (
+    <div style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: '8px',
+      background: colors.bg,
+      padding: '4px 10px',
+      borderRadius: '12px',
+      fontSize: '12px',
+      marginLeft: '8px'
+    }}>
+      <span style={{ color: colors.text, fontWeight: 500 }}>{label}: {percentage}%</span>
+      <div style={{
+        width: '50px',
+        height: '6px',
+        background: '#e0e0e0',
+        borderRadius: '3px',
+        overflow: 'hidden'
+      }}>
+        <div style={{
+          width: `${percentage}%`,
+          height: '100%',
+          background: colors.bar,
+          borderRadius: '3px'
+        }} />
+      </div>
+    </div>
+  )
 }
 
 interface FileInfoModalProps {
@@ -77,7 +121,7 @@ export function FileInfoModal({ fileInfo, onClose }: FileInfoModalProps) {
 
         {/* Transcript section with job-specific status */}
         <div style={{ marginTop: '16px' }}>
-          <p>
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
             <strong>Transcript</strong>
             {fileInfo.transcriptProvider && (
               <span style={{ color: '#666', fontSize: '12px', marginLeft: '8px' }}>
@@ -85,7 +129,8 @@ export function FileInfoModal({ fileInfo, onClose }: FileInfoModalProps) {
                 {fileInfo.transcriptModel ? ` / ${fileInfo.transcriptModel}` : ''})
               </span>
             )}
-          </p>
+            <ConfidenceBadge confidence={fileInfo.transcriptConfidence} label="Confidence" />
+          </div>
           {fileInfo.transcriptStatus === 'pending' && (
             <p
               style={{
@@ -126,7 +171,7 @@ export function FileInfoModal({ fileInfo, onClose }: FileInfoModalProps) {
 
         {/* Summary section with job-specific status */}
         <div style={{ marginTop: '16px' }}>
-          <p>
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
             <strong>AI Summary</strong>
             {fileInfo.summaryProvider && (
               <span style={{ color: '#666', fontSize: '12px', marginLeft: '8px' }}>
@@ -134,7 +179,8 @@ export function FileInfoModal({ fileInfo, onClose }: FileInfoModalProps) {
                 {fileInfo.summaryModel ? ` / ${fileInfo.summaryModel}` : ''})
               </span>
             )}
-          </p>
+            <ConfidenceBadge confidence={fileInfo.summaryConfidence} label="Confidence" />
+          </div>
           {fileInfo.summaryStatus === 'pending' && (
             <p
               style={{
