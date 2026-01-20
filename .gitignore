@@ -53,5 +53,6 @@ models/*.bin
 models/*.safetensors
 models/*.onnx
 
-# Cloudflare tunnel credentials
+# Cloudflare tunnel (credentials and config with secrets)
 cloudflared/credentials.json
+cloudflared/config.yml
