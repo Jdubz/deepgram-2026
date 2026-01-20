@@ -100,6 +100,9 @@ router.post(
       const filename = req.file.filename;
       const id = path.basename(filename, path.extname(filename));
 
+      // Generate unique display name for duplicates
+      const displayName = inferenceQueue.generateUniqueDisplayName(req.file.originalname);
+
       // Extract duration from audio file for filtering support
       const fileContent = fs.readFileSync(filePath);
       const audioResult = await audioService.validateAndExtract(
@@ -113,7 +116,7 @@ router.post(
         id,
         filename,
         filePath,
-        originalFilename: req.file.originalname,
+        originalFilename: displayName,
         mimeType: req.file.mimetype,
         fileSize: req.file.size,
         durationSeconds: audioResult.metadata?.duration,
@@ -124,7 +127,7 @@ router.post(
 
       res.status(201).json({
         id: submission.id,
-        filename: submission.filename,
+        filename: displayName,
         status: submission.status,
         provider,
         message: "File uploaded and queued for processing",

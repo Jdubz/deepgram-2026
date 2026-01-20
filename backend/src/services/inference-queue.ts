@@ -598,6 +598,39 @@ class InferenceQueueService {
   }
 
   /**
+   * Generate a unique display name for a file
+   * If "hello.flac" exists, returns "hello_1.flac", "hello_2.flac", etc.
+   */
+  generateUniqueDisplayName(originalFilename: string): string {
+    const db = this.getDb();
+
+    // Parse filename into base and extension
+    const lastDot = originalFilename.lastIndexOf(".");
+    const baseName = lastDot > 0 ? originalFilename.slice(0, lastDot) : originalFilename;
+    const extension = lastDot > 0 ? originalFilename.slice(lastDot) : "";
+
+    // Check if exact name exists
+    const exactMatch = db.prepare(
+      "SELECT COUNT(*) as count FROM audio_submissions WHERE original_filename = ?"
+    ).get(originalFilename) as { count: number };
+
+    if (exactMatch.count === 0) {
+      return originalFilename;
+    }
+
+    // Find existing files with pattern "baseName_N"
+    // Count how many match the base pattern
+    const pattern = `${baseName}_%`;
+    const existingCount = db.prepare(`
+      SELECT COUNT(*) as count FROM audio_submissions
+      WHERE original_filename = ? OR original_filename LIKE ?
+    `).get(originalFilename, pattern + extension) as { count: number };
+
+    // Return next index
+    return `${baseName}_${existingCount.count}${extension}`;
+  }
+
+  /**
    * Delete a submission and its associated data (for DELETE /files/:id)
    * Returns true if the submission was found and deleted
    */
