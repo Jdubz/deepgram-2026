@@ -9,9 +9,8 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - LOCALAI_URL=http://localai:8080
-      - LOCALAI_WHISPER_MODEL=whisper-1
-      - LOCALAI_LLM_MODEL=gpt-4o-mini
-      # Deepgram API key (optional - for deepgram provider)
+      - LOCALAI_WHISPER_MODEL=${LOCALAI_WHISPER_MODEL:-whisper-1}
+      - LOCALAI_LLM_MODEL=${LOCALAI_LLM_MODEL:-}
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
     volumes:
       # Persist SQLite database and uploads
@@ -28,16 +27,19 @@ services:
           memory: 512M
 
   localai:
-    # AIO image includes whisper backend (required for transcription)
-    image: localai/localai:latest-aio-gpu-nvidia-cuda-12
+    # Custom image: AIO base (has whisper backend) with default models removed
+    build:
+      context: ./localai
+      dockerfile: Dockerfile
     ports:
       - "8080:8080"
     environment:
       - DEBUG=false
       - MODELS_PATH=/models
-      - PARALLEL_REQUESTS=1
-      # Pre-install whisper backend for transcription
-      - LOCALAI_EXTERNAL_BACKENDS=whisper:quay.io/go-skynet/local-ai-backends:latest-gpu-nvidia-cuda-12-whisper
+      - PARALLEL_REQUESTS=${LOCALAI_PARALLEL_REQUESTS:-1}
+      # Override MODELS to only load our configs (skip AIO gallery models)
+      - PROFILE=gpu-8g
+      - MODELS=/models/whisper-1.yaml,/models/qwen2.5-7b.yaml
     volumes:
       # Mount local models folder
       - ./models:/models
@@ -59,6 +61,19 @@ services:
       retries: 10
       start_period: 180s  # Models take time to load on first run
     restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: deepgram-tunnel
+    restart: unless-stopped
+    user: root
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - ./cloudflared/credentials.json:/etc/cloudflared/credentials.json:ro
+    # Allow access to host network services (frontend on 5173, backend on 3001)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   backend-data:

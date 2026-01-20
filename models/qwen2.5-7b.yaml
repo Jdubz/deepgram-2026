@@ -1,15 +1,17 @@
 backend: llama-cpp
 context_size: 4096
+known_usecases:
+    - FLAG_CHAT
 mmap: true
 name: qwen2.5-7b
 parameters:
-  model: localai-functioncall-qwen2.5-7b-v0.5-q4_k_m.gguf
+    model: localai-functioncall-qwen2.5-7b-v0.5-q4_k_m.gguf
 stopwords:
-  - "<|im_end|>"
+    - <|im_end|>
 template:
-  chat_message: |
-    <|im_start|>{{ .RoleName }}
-    {{ .Content }}<|im_end|>
-  chat: |
-    {{.Input -}}
-    <|im_start|>assistant
+    chat: |
+        {{.Input -}}
+        <|im_start|>assistant
+    chat_message: |
+        <|im_start|>{{ .RoleName }}
+        {{ .Content }}<|im_end|>

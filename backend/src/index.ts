@@ -70,8 +70,8 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   res.status(500).json({ error: "Internal server error" });
 });
 
-// Start server
-const server = app.listen(PORT, () => {
+// Start server (bind to all interfaces for Cloudflare tunnel access)
+const server = app.listen(Number(PORT), "0.0.0.0", () => {
   // Start job processor
   jobProcessor.start();
 
