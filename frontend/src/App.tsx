@@ -9,17 +9,43 @@ interface AudioFile {
   size: number
   mimeType: string
   uploadedAt: string
+  status: string
 }
 
 interface FileInfo {
   filename: string
   duration?: number
   size?: number
-  summary?: string
   transcript?: string
+  transcriptProvider?: string
+  transcriptModel?: string
+  summary?: string
+  summaryProvider?: string
+  summaryModel?: string
   status?: string
   error?: string
   message?: string
+}
+
+interface Job {
+  id: number
+  job_type: 'transcribe' | 'summarize'
+  status: 'pending' | 'processing' | 'completed' | 'failed'
+  provider: string
+  audio_file_id: string | null
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  processing_time_ms: number | null
+  error_message: string | null
+}
+
+interface QueueStatus {
+  totalJobs: number
+  pending: number
+  processing: number
+  completed: number
+  failed: number
 }
 
 function App() {
@@ -29,6 +55,9 @@ function App() {
   const [message, setMessage] = useState('')
   const [fileInfo, setFileInfo] = useState<FileInfo | null>(null)
   const [maxDuration, setMaxDuration] = useState('')
+  const [jobs, setJobs] = useState<Job[]>([])
+  const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null)
+  const [queueExpanded, setQueueExpanded] = useState(false)
 
   const fetchFiles = async () => {
     try {
@@ -43,9 +72,28 @@ function App() {
     }
   }
 
+  const fetchJobs = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/jobs?limit=50`)
+      const data = await res.json()
+      setJobs(data.jobs || [])
+      setQueueStatus(data.status || null)
+    } catch (err) {
+      console.error('Failed to fetch jobs:', err)
+    }
+  }
+
   useEffect(() => {
     fetchFiles()
-  }, [maxDuration])
+    fetchJobs()
+    // Auto-refresh jobs every 5 seconds when queue is expanded
+    const interval = setInterval(() => {
+      if (queueExpanded) {
+        fetchJobs()
+      }
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [maxDuration, queueExpanded])
 
   const handleUpload = async () => {
     if (!selectedFile) return
@@ -105,6 +153,21 @@ function App() {
     return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
   }
 
+  const formatTime = (isoString: string | null) => {
+    if (!isoString) return '-'
+    return new Date(isoString).toLocaleTimeString()
+  }
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'completed': return '#4caf50'
+      case 'processing': return '#2196f3'
+      case 'pending': return '#ff9800'
+      case 'failed': return '#f44336'
+      default: return '#666'
+    }
+  }
+
   return (
     <div style={{ maxWidth: '900px', margin: '0 auto', padding: '20px', fontFamily: 'system-ui' }}>
       <h1>Audio Projects API</h1>
@@ -159,6 +222,7 @@ function App() {
                 <th style={{ padding: '10px', textAlign: 'left' }}>Filename</th>
                 <th style={{ padding: '10px', textAlign: 'left' }}>Duration</th>
                 <th style={{ padding: '10px', textAlign: 'left' }}>Size</th>
+                <th style={{ padding: '10px', textAlign: 'left' }}>Status</th>
                 <th style={{ padding: '10px', textAlign: 'left' }}>Actions</th>
               </tr>
             </thead>
@@ -168,6 +232,11 @@ function App() {
                   <td style={{ padding: '10px' }}>{file.filename}</td>
                   <td style={{ padding: '10px' }}>{formatDuration(file.duration)}</td>
                   <td style={{ padding: '10px' }}>{formatSize(file.size)}</td>
+                  <td style={{ padding: '10px' }}>
+                    <span style={{ color: getStatusColor(file.status), fontWeight: 500 }}>
+                      {file.status}
+                    </span>
+                  </td>
                   <td style={{ padding: '10px' }}>
                     <button onClick={() => handleDownload(file.filename)} style={{ marginRight: '8px' }}>
                       Download
@@ -180,6 +249,80 @@ function App() {
               ))}
             </tbody>
           </table>
+        )}
+      </section>
+
+      {/* Collapsible Job Queue */}
+      <section style={{ marginTop: '20px' }}>
+        <div
+          onClick={() => setQueueExpanded(!queueExpanded)}
+          style={{
+            background: '#f5f5f5',
+            padding: '12px 16px',
+            borderRadius: '8px',
+            cursor: 'pointer',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center'
+          }}
+        >
+          <h2 style={{ margin: 0 }}>
+            Job Queue {queueExpanded ? '▼' : '▶'}
+          </h2>
+          {queueStatus && (
+            <div style={{ display: 'flex', gap: '16px', fontSize: '14px' }}>
+              <span style={{ color: '#ff9800' }}>Pending: {queueStatus.pending}</span>
+              <span style={{ color: '#2196f3' }}>Processing: {queueStatus.processing}</span>
+              <span style={{ color: '#4caf50' }}>Completed: {queueStatus.completed}</span>
+              <span style={{ color: '#f44336' }}>Failed: {queueStatus.failed}</span>
+            </div>
+          )}
+        </div>
+
+        {queueExpanded && (
+          <div style={{ marginTop: '10px' }}>
+            <div style={{ marginBottom: '10px', display: 'flex', justifyContent: 'flex-end' }}>
+              <button onClick={fetchJobs} style={{ padding: '4px 12px' }}>Refresh</button>
+            </div>
+            {jobs.length === 0 ? (
+              <p style={{ color: '#666' }}>No jobs in queue.</p>
+            ) : (
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
+                <thead>
+                  <tr style={{ background: '#eee' }}>
+                    <th style={{ padding: '8px', textAlign: 'left' }}>ID</th>
+                    <th style={{ padding: '8px', textAlign: 'left' }}>Type</th>
+                    <th style={{ padding: '8px', textAlign: 'left' }}>Status</th>
+                    <th style={{ padding: '8px', textAlign: 'left' }}>Provider</th>
+                    <th style={{ padding: '8px', textAlign: 'left' }}>Created</th>
+                    <th style={{ padding: '8px', textAlign: 'left' }}>Time</th>
+                    <th style={{ padding: '8px', textAlign: 'left' }}>Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {jobs.map((job) => (
+                    <tr key={job.id} style={{ borderBottom: '1px solid #eee' }}>
+                      <td style={{ padding: '8px' }}>{job.id}</td>
+                      <td style={{ padding: '8px' }}>{job.job_type}</td>
+                      <td style={{ padding: '8px' }}>
+                        <span style={{ color: getStatusColor(job.status), fontWeight: 500 }}>
+                          {job.status}
+                        </span>
+                      </td>
+                      <td style={{ padding: '8px' }}>{job.provider}</td>
+                      <td style={{ padding: '8px' }}>{formatTime(job.created_at)}</td>
+                      <td style={{ padding: '8px' }}>
+                        {job.processing_time_ms ? `${(job.processing_time_ms / 1000).toFixed(1)}s` : '-'}
+                      </td>
+                      <td style={{ padding: '8px', color: '#f44336', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {job.error_message || '-'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
         )}
       </section>
 
@@ -231,7 +374,14 @@ function App() {
 
             {fileInfo.transcript && (
               <>
-                <p><strong>Transcript:</strong></p>
+                <p>
+                  <strong>Transcript</strong>
+                  {fileInfo.transcriptProvider && (
+                    <span style={{ color: '#666', fontSize: '12px', marginLeft: '8px' }}>
+                      ({fileInfo.transcriptProvider}{fileInfo.transcriptModel ? ` / ${fileInfo.transcriptModel}` : ''})
+                    </span>
+                  )}
+                </p>
                 <p style={{ background: '#f5f5f5', padding: '12px', borderRadius: '4px', whiteSpace: 'pre-wrap' }}>
                   {fileInfo.transcript}
                 </p>
@@ -240,7 +390,14 @@ function App() {
 
             {fileInfo.summary && (
               <>
-                <p><strong>AI Summary:</strong></p>
+                <p>
+                  <strong>AI Summary</strong>
+                  {fileInfo.summaryProvider && (
+                    <span style={{ color: '#666', fontSize: '12px', marginLeft: '8px' }}>
+                      ({fileInfo.summaryProvider}{fileInfo.summaryModel ? ` / ${fileInfo.summaryModel}` : ''})
+                    </span>
+                  )}
+                </p>
                 <p style={{ background: '#e3f2fd', padding: '12px', borderRadius: '4px' }}>
                   {fileInfo.summary}
                 </p>

@@ -43,6 +43,7 @@ services:
       - ./models:/models
       # Persist downloaded backends (whisper, llama, etc.) across restarts
       - localai-cache:/build
+      - localai-backends:/backends
     deploy:
       resources:
         reservations:
@@ -62,3 +63,4 @@ volumes:
   backend-data:
   backend-uploads:
   localai-cache:
+  localai-backends:

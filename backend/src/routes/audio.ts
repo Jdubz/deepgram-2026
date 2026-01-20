@@ -304,16 +304,26 @@ router.get("/info", async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    // Return completed submission info
-    const response: AudioInfoResponse = {
+    // Get job details for provider/model info
+    const transcriptJob = submission.transcript_job_id
+      ? inferenceQueue.getJob(submission.transcript_job_id)
+      : null;
+    const summaryJob = submission.summary_job_id
+      ? inferenceQueue.getJob(submission.summary_job_id)
+      : null;
+
+    // Return completed submission info with provider details
+    res.json({
       filename: submission.original_filename || submission.filename,
       duration: submission.duration_seconds || 0,
       size: submission.file_size || 0,
-      summary: submission.summary || "",
       transcript: submission.transcript || "",
-    };
-
-    res.json(response);
+      transcriptProvider: transcriptJob?.provider || null,
+      transcriptModel: transcriptJob?.model_used || null,
+      summary: submission.summary || "",
+      summaryProvider: summaryJob?.provider || null,
+      summaryModel: summaryJob?.model_used || null,
+    });
   } catch (error) {
     console.error("Info error:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -398,6 +408,57 @@ router.get("/submissions/:id", async (req: Request, res: Response): Promise<void
     });
   } catch (error) {
     console.error("Get submission error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+/**
+ * GET /jobs
+ *
+ * Get recent jobs with optional limit.
+ *
+ * Query parameters:
+ *   - limit: Max number of jobs to return (default: 50)
+ */
+router.get("/jobs", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const limit = req.query.limit ? Number(req.query.limit) : 50;
+    const jobs = inferenceQueue.getRecentJobs(limit);
+    const queueStatus = inferenceQueue.getQueueStatus();
+
+    res.json({
+      jobs,
+      status: queueStatus,
+    });
+  } catch (error) {
+    console.error("Get jobs error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+/**
+ * GET /jobs/:id
+ *
+ * Get a specific job by ID.
+ */
+router.get("/jobs/:id", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const jobId = Number(req.params.id);
+    if (isNaN(jobId)) {
+      res.status(400).json({ error: "Invalid job ID" });
+      return;
+    }
+
+    const job = inferenceQueue.getJobWithHeartbeat(jobId);
+
+    if (!job) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+
+    res.json(job);
+  } catch (error) {
+    console.error("Get job error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
