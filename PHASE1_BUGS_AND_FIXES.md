@@ -1,5 +1,15 @@
 # Phase 1: Bugs and Gaps Investigation
 
+**Status**: ✅ Critical fixes applied and committed (9b5cd4b)
+
+All 3 critical type safety issues have been resolved:
+- Job interface now includes confidence field
+- AudioSubmission interface now includes transcript_confidence and summary_confidence
+- GET /list endpoint now returns confidence scores in response
+- Route documentation updated with min_confidence parameter
+
+---
+
 ## Critical Issues ⚠️
 
 ### 1. Missing `confidence` Field in `Job` Interface
@@ -359,14 +369,14 @@ ALTER TABLE jobs ADD COLUMN confidence REAL DEFAULT NULL
 ## Summary of Required Fixes
 
 ### Must Fix (Critical) ⚠️
-1. ✅ Add `confidence: number | null` to `Job` interface
-2. ✅ Add `transcript_confidence` and `summary_confidence` to `AudioSubmission` interface
-3. ✅ Return confidence scores in GET /list endpoint response
+1. ✅ **FIXED** - Add `confidence: number | null` to `Job` interface
+2. ✅ **FIXED** - Add `transcript_confidence` and `summary_confidence` to `AudioSubmission` interface
+3. ✅ **FIXED** - Return confidence scores in GET /list endpoint response
 
 ### Should Fix (Medium) 📋
 4. ⚠️ Add confidence fields to `AudioMetadata` interface (if used)
 5. ✅ Document why Deepgram summarize doesn't return confidence
-6. ✅ Update route comments to document min_confidence parameter
+6. ✅ **FIXED** - Update route comments to document min_confidence parameter
 
 ### Nice to Have (Low) 📝
 7. ⚠️ Update README with confidence feature documentation
