@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   UploadSection,
+  RecordSection,
   FilesList,
   JobQueue,
   FileInfoModal,
@@ -119,6 +120,15 @@ function App() {
         onUpload={handleUpload}
         uploading={uploading}
         message={message}
+      />
+
+      <RecordSection
+        provider={provider}
+        onProviderChange={setProvider}
+        onUploadSuccess={() => {
+          fetchFiles()
+          fetchJobs()
+        }}
       />
 
       <FilesList
