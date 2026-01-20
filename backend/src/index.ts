@@ -10,6 +10,9 @@
  * - Getting AI-generated summaries
  */
 
+// Load environment variables from .env file (must be first import)
+import "dotenv/config";
+
 import express from "express";
 import cors from "cors";
 import audioRoutes from "./routes/audio.js";

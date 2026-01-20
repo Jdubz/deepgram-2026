@@ -10,11 +10,15 @@
  * - Auto-chain: transcribe job -> summarize job
  * - Graceful shutdown (finishes current job before stopping)
  * - Multi-provider support via provider factory
+ * - Model availability checking before job starts
+ * - Streaming with heartbeat tracking for LLM jobs
+ * - Stuck job detection and recovery
  */
 
 import { Provider } from "../types/index.js";
 import { inferenceQueue, Job, SubmissionStatus } from "./inference-queue.js";
 import { getProvider } from "./provider-factory.js";
+import { localAI, LocalAIService } from "./localai.js";
 
 export interface ProcessorStatus {
   isRunning: boolean;
@@ -30,7 +34,9 @@ class JobProcessorService {
   private currentJobType: string | null = null;
   private shutdownRequested = false;
   private pollIntervalMs = 2000;
+  private stuckCheckIntervalMs = 30000; // Check for stuck jobs every 30 seconds
   private pollTimeoutId: NodeJS.Timeout | null = null;
+  private stuckCheckTimeoutId: NodeJS.Timeout | null = null;
 
   /**
    * Start the job processor
@@ -49,8 +55,10 @@ class JobProcessorService {
     this.isRunning = true;
     this.shutdownRequested = false;
     this.poll();
+    this.checkStuckJobs(); // Start stuck job detection loop
 
     console.log("[JobProcessor] Started - polling every", this.pollIntervalMs, "ms");
+    console.log("[JobProcessor] Stuck job detection every", this.stuckCheckIntervalMs, "ms");
   }
 
   /**
@@ -69,6 +77,12 @@ class JobProcessorService {
     if (this.pollTimeoutId) {
       clearTimeout(this.pollTimeoutId);
       this.pollTimeoutId = null;
+    }
+
+    // Clear stuck job check timeout
+    if (this.stuckCheckTimeoutId) {
+      clearTimeout(this.stuckCheckTimeoutId);
+      this.stuckCheckTimeoutId = null;
     }
 
     // Wait for current job to finish
@@ -184,6 +198,24 @@ class JobProcessorService {
     const provider = getProvider(job.provider as Provider);
     console.log(`[JobProcessor] Transcribing with ${provider.name}: ${job.input_file_path}`);
 
+    // Verify model is loaded for LocalAI before starting
+    if (job.provider === Provider.LOCAL && provider instanceof LocalAIService) {
+      const whisperModel = provider.getConfig().whisperModel;
+      const modelLoaded = await provider.isModelLoaded(whisperModel);
+
+      if (!modelLoaded) {
+        throw new Error(
+          `Whisper model '${whisperModel}' is not loaded. ` +
+          `LocalAI server is running but whisper backend failed to load. ` +
+          `Check LocalAI logs for backend/model loading errors. ` +
+          `Ensure whisper model files are present and backend is configured.`
+        );
+      }
+
+      // Mark model as verified
+      inferenceQueue.markModelVerified(job.id);
+    }
+
     // Call provider for transcription
     const result = await provider.transcribe(job.input_file_path);
 
@@ -228,20 +260,47 @@ class JobProcessorService {
 
   /**
    * Process a summarization job
+   * Uses streaming with heartbeat for LocalAI to detect stuck jobs
    */
   private async processSummarizeJob(job: Job): Promise<void> {
     if (!job.input_text) {
       throw new Error("Summarize job missing input_text");
     }
 
-    // Get the appropriate provider
     const provider = getProvider(job.provider as Provider);
     console.log(
       `[JobProcessor] Summarizing with ${provider.name} (${job.input_text.length} chars)...`
     );
 
-    // Call provider for summarization
-    const result = await provider.summarize(job.input_text);
+    let result;
+
+    // Use streaming with heartbeat for LocalAI provider
+    if (job.provider === Provider.LOCAL && provider instanceof LocalAIService) {
+      // Verify model is loaded before starting
+      const modelLoaded = await provider.isModelLoaded(provider.getConfig().llmModel);
+      if (!modelLoaded) {
+        throw new Error(
+          `Model '${provider.getConfig().llmModel}' is not loaded. ` +
+          `LocalAI server is running but model failed to load. ` +
+          `Check LocalAI logs for model loading errors.`
+        );
+      }
+
+      // Mark model as verified
+      inferenceQueue.markModelVerified(job.id);
+
+      // Use streaming summarize with heartbeat callback
+      result = await provider.summarizeWithHeartbeat(
+        job.input_text,
+        (tokenCount, _partialText) => {
+          // Update heartbeat in database on each token
+          inferenceQueue.updateJobHeartbeat(job.id, tokenCount);
+        }
+      );
+    } else {
+      // Use standard summarize for other providers (Deepgram)
+      result = await provider.summarize(job.input_text);
+    }
 
     console.log(
       `[JobProcessor] Summarization complete (${result.processingTimeMs}ms, ${result.tokensUsed} tokens)`
@@ -265,6 +324,53 @@ class JobProcessorService {
       );
       inferenceQueue.updateSubmissionStatus(job.audio_file_id, "completed");
     }
+  }
+
+  /**
+   * Check for stuck jobs and recover them
+   * Runs on a separate interval from the main poll loop
+   */
+  private checkStuckJobs(): void {
+    if (this.shutdownRequested) {
+      return;
+    }
+
+    try {
+      const stuckJobs = inferenceQueue.findStuckJobs();
+
+      for (const job of stuckJobs) {
+        const jobInfo = inferenceQueue.getJobWithHeartbeat(job.id);
+        const heartbeatCount = jobInfo?.heartbeat_count || 0;
+        const modelVerified = jobInfo?.model_verified || 0;
+
+        let reason: string;
+        if (!modelVerified) {
+          reason = "Job started but model was never verified as loaded";
+        } else if (heartbeatCount === 0) {
+          reason = "Job started but never received any tokens (model may have hung)";
+        } else {
+          reason = `Job stalled after receiving ${heartbeatCount} tokens`;
+        }
+
+        console.warn(
+          `[JobProcessor] Recovering stuck job ${job.id} (${job.job_type}): ${reason}`
+        );
+
+        inferenceQueue.recoverStuckJob(job.id, reason);
+      }
+
+      if (stuckJobs.length > 0) {
+        console.log(`[JobProcessor] Recovered ${stuckJobs.length} stuck job(s)`);
+      }
+    } catch (error) {
+      console.error("[JobProcessor] Error checking for stuck jobs:", error);
+    }
+
+    // Schedule next check
+    this.stuckCheckTimeoutId = setTimeout(
+      () => this.checkStuckJobs(),
+      this.stuckCheckIntervalMs
+    );
   }
 }
 

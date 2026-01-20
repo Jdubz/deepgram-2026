@@ -28,6 +28,15 @@ const ALLOWED_MIME_TYPES = new Set([
 // Max file size: 100MB
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
 
+// Average bitrates for duration estimation (bits per second)
+const AVERAGE_BITRATES: Record<string, number> = {
+  "FLAC": 800000,      // ~800 kbps for CD-quality FLAC
+  "MP3": 192000,       // 192 kbps average
+  "OGG": 160000,       // 160 kbps average
+  "AAC": 128000,       // 128 kbps average
+  "WAV": 1411200,      // CD-quality uncompressed (44.1kHz * 16bit * 2ch)
+};
+
 export interface ValidationResult {
   valid: boolean;
   error?: string;
@@ -35,6 +44,62 @@ export interface ValidationResult {
 }
 
 export const audioService = {
+  /**
+   * Parse FLAC STREAMINFO block to extract duration
+   * Some FLAC files don't have total_samples in metadata, so music-metadata can't get duration
+   */
+  parseFLACDuration(buffer: Buffer): number | null {
+    // Check for FLAC magic
+    if (buffer.slice(0, 4).toString() !== "fLaC") {
+      return null;
+    }
+
+    // STREAMINFO block starts at byte 8 (after 4-byte magic + 4-byte block header)
+    const blockType = buffer[4] & 0x7f;
+    if (blockType !== 0) {
+      return null; // Not STREAMINFO
+    }
+
+    const streaminfo = buffer.slice(8, 8 + 34);
+
+    // Parse sample rate (20 bits starting at byte 10)
+    const b10 = streaminfo[10], b11 = streaminfo[11], b12 = streaminfo[12];
+    const sampleRate = (b10 << 12) | (b11 << 4) | (b12 >> 4);
+
+    // Parse total samples (36 bits: 4 bits from byte 13 + 32 bits from bytes 14-17)
+    const b13 = streaminfo[13], b14 = streaminfo[14], b15 = streaminfo[15];
+    const b16 = streaminfo[16], b17 = streaminfo[17];
+    const totalSamples =
+      ((b13 & 0x0f) * Math.pow(2, 32)) +
+      ((b14 << 24) >>> 0) + (b15 << 16) + (b16 << 8) + b17;
+
+    if (sampleRate > 0 && totalSamples > 0) {
+      return totalSamples / sampleRate;
+    }
+
+    return null;
+  },
+
+  /**
+   * Estimate duration from file size and codec
+   * Used as fallback when metadata doesn't contain duration
+   */
+  estimateDuration(fileSize: number, codec: string, sampleRate?: number, channels?: number, bitsPerSample?: number): number {
+    // For uncompressed formats, calculate exactly
+    if (codec === "WAV" || codec === "WAVE") {
+      const sr = sampleRate || 44100;
+      const ch = channels || 2;
+      const bits = bitsPerSample || 16;
+      const bytesPerSecond = sr * ch * (bits / 8);
+      // Subtract ~44 bytes for WAV header
+      return Math.max(0, (fileSize - 44) / bytesPerSecond);
+    }
+
+    // For compressed formats, estimate using average bitrate
+    const bitrate = AVERAGE_BITRATES[codec] || 256000;
+    return (fileSize * 8) / bitrate;
+  },
+
   /**
    * Validate and extract metadata from an audio buffer
    */
@@ -62,19 +127,25 @@ export const audioService = {
       // Parse audio metadata using music-metadata
       const mm = await parseBuffer(buffer);
 
+      const codec = mm.format.codec || mm.format.container || "unknown";
       const mimeType = mm.format.container || "audio/unknown";
-      const duration = mm.format.duration || 0;
       const channels = mm.format.numberOfChannels;
       const sampleRate = mm.format.sampleRate;
+      const bitsPerSample = mm.format.bitsPerSample;
 
-      /**
-       * TODO (Exercise 8): Add more robust validation
-       *
-       * 1. Check magic bytes to verify actual file type
-       * 2. Validate MIME type against allowed list
-       * 3. Check for malformed audio data
-       * 4. Sanitize filename to prevent path traversal
-       */
+      // Try to get duration from music-metadata first
+      let duration = mm.format.duration;
+
+      // If duration is missing, try format-specific parsing
+      if (!duration && codec === "FLAC") {
+        duration = this.parseFLACDuration(buffer) || undefined;
+      }
+
+      // If still no duration, estimate from file size
+      if (!duration) {
+        duration = this.estimateDuration(buffer.length, codec, sampleRate, channels, bitsPerSample);
+        console.log(`[AudioService] Estimated duration for ${originalFilename}: ${duration.toFixed(2)}s (codec: ${codec})`);
+      }
 
       const id = uuidv4();
       const sanitizedFilename = this.sanitizeFilename(originalFilename);
@@ -85,7 +156,7 @@ export const audioService = {
         originalFilename,
         mimeType,
         size: buffer.length,
-        duration,
+        duration: duration || 0,
         channels,
         sampleRate,
         uploadedAt: new Date(),

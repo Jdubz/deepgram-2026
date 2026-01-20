@@ -13,7 +13,6 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
-import { storage } from "../services/storage.js";
 import { audioService } from "../services/audio.js";
 import { inferenceQueue } from "../services/inference-queue.js";
 import { getDefaultProvider } from "../services/provider-factory.js";
@@ -101,6 +100,14 @@ router.post(
       const filename = req.file.filename;
       const id = path.basename(filename, path.extname(filename));
 
+      // Extract duration from audio file for filtering support
+      const fileContent = fs.readFileSync(filePath);
+      const audioResult = await audioService.validateAndExtract(
+        fileContent,
+        req.file.originalname,
+        customMetadata
+      );
+
       // Create submission in queue with auto-processing
       const submission = inferenceQueue.createSubmission({
         id,
@@ -109,27 +116,11 @@ router.post(
         originalFilename: req.file.originalname,
         mimeType: req.file.mimetype,
         fileSize: req.file.size,
+        durationSeconds: audioResult.metadata?.duration,
         metadata: customMetadata,
         autoProcess: true,
         provider,
       });
-
-      // Also store in memory storage for backward compatibility with /list, /download
-      const fileContent = fs.readFileSync(filePath);
-      const audioResult = await audioService.validateAndExtract(
-        fileContent,
-        req.file.originalname,
-        customMetadata
-      );
-
-      if (audioResult.valid && audioResult.metadata) {
-        // Override ID to match submission ID
-        audioResult.metadata.id = id;
-        await storage.store(id, {
-          metadata: audioResult.metadata,
-          content: fileContent,
-        });
-      }
 
       res.status(201).json({
         id: submission.id,
@@ -168,28 +159,30 @@ router.get("/list", async (req: Request, res: Response): Promise<void> => {
       offset: req.query.offset ? Number(req.query.offset) : 0,
     };
 
-    let files = await storage.listAll();
+    // Query SQLite with filtering and pagination
+    const { submissions, total } = inferenceQueue.getSubmissionsFiltered({
+      maxDuration: query.maxduration,
+      minDuration: query.minduration,
+      limit: query.limit,
+      offset: query.offset,
+    });
 
-    // Apply filters
-    if (query.maxduration !== undefined) {
-      files = files.filter((f) => f.duration <= query.maxduration!);
-    }
-    if (query.minduration !== undefined) {
-      files = files.filter((f) => f.duration >= query.minduration!);
-    }
+    // Map submissions to the expected response format
+    const files = submissions.map((s) => ({
+      id: s.id,
+      filename: s.original_filename || s.filename,
+      duration: s.duration_seconds || 0,
+      size: s.file_size || 0,
+      mimeType: s.mime_type || "audio/unknown",
+      uploadedAt: s.created_at,
+      status: s.status,
+    }));
 
-    const total = files.length;
-
-    // Apply pagination
-    const limit = query.limit || 100;
-    const offset = query.offset || 0;
-    files = files.slice(offset, offset + limit);
-
-    const response: ListFilesResponse = {
+    const response = {
       files,
       total,
-      limit,
-      offset,
+      limit: query.limit || 100,
+      offset: query.offset || 0,
     };
 
     res.json(response);
@@ -220,25 +213,36 @@ router.get("/download", async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    let file;
+    // Look up submission in SQLite
+    let submission;
     if (id) {
-      file = await storage.getById(id as string);
+      submission = inferenceQueue.getSubmission(id as string);
     } else {
-      file = await storage.getByFilename(name as string);
+      submission = inferenceQueue.getSubmissionByFilename(name as string);
     }
 
-    if (!file) {
+    if (!submission) {
       res.status(404).json({ error: "File not found" });
       return;
     }
 
-    res.setHeader("Content-Type", file.metadata.mimeType);
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="${file.metadata.filename}"`
-    );
-    res.setHeader("Content-Length", file.content.length);
-    res.send(file.content);
+    // Check if file exists on disk
+    if (!submission.file_path || !fs.existsSync(submission.file_path)) {
+      res.status(404).json({ error: "File not found on disk" });
+      return;
+    }
+
+    const filename = submission.original_filename || submission.filename;
+    const mimeType = submission.mime_type || "application/octet-stream";
+    const stat = fs.statSync(submission.file_path);
+
+    res.setHeader("Content-Type", mimeType);
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Length", stat.size);
+
+    // Stream file from disk instead of loading into memory
+    const fileStream = fs.createReadStream(submission.file_path);
+    fileStream.pipe(res);
   } catch (error) {
     console.error("Download error:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -320,14 +324,24 @@ router.get("/info", async (req: Request, res: Response): Promise<void> => {
  */
 router.get("/files/:id", async (req: Request, res: Response): Promise<void> => {
   try {
-    const file = await storage.getById(req.params.id);
+    const submission = inferenceQueue.getSubmission(req.params.id);
 
-    if (!file) {
+    if (!submission) {
       res.status(404).json({ error: "File not found" });
       return;
     }
 
-    res.json(file.metadata);
+    // Return metadata in expected format
+    res.json({
+      id: submission.id,
+      filename: submission.original_filename || submission.filename,
+      originalFilename: submission.original_filename,
+      mimeType: submission.mime_type,
+      size: submission.file_size,
+      duration: submission.duration_seconds,
+      uploadedAt: submission.created_at,
+      status: submission.status,
+    });
   } catch (error) {
     console.error("Get file error:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -338,12 +352,13 @@ router.get("/files/:id", async (req: Request, res: Response): Promise<void> => {
  * DELETE /files/:id
  *
  * Delete a file by ID.
+ * Also deletes associated jobs and the file from disk.
  *
  * TODO (Exercise 7): Add authentication check
  */
 router.delete("/files/:id", async (req: Request, res: Response): Promise<void> => {
   try {
-    const deleted = await storage.delete(req.params.id);
+    const deleted = inferenceQueue.deleteSubmission(req.params.id);
 
     if (!deleted) {
       res.status(404).json({ error: "File not found" });

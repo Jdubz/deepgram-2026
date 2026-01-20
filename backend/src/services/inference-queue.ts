@@ -10,11 +10,9 @@
  */
 
 import Database from "better-sqlite3";
-import path from "path";
+import fs from "fs";
+import { database } from "../db/database.js";
 import { Provider } from "../types/index.js";
-
-// Path to SQLite database (in backend/data/)
-const DB_PATH = path.resolve(__dirname, "../../data/deepgram.db");
 
 export type JobType = "transcribe" | "summarize";
 export type JobStatus = "pending" | "processing" | "completed" | "failed";
@@ -98,35 +96,18 @@ export interface QueueStatus {
 }
 
 class InferenceQueueService {
-  private db: Database.Database | null = null;
-
   /**
-   * Get database connection (lazy initialization)
+   * Get database connection from the shared database manager
    */
   private getDb(): Database.Database {
-    if (!this.db) {
-      this.db = new Database(DB_PATH);
-      this.db.pragma("journal_mode = WAL");
-      this.db.pragma("busy_timeout = 30000");
-    }
-    return this.db;
+    return database.getConnection();
   }
 
   /**
    * Check if the database is initialized
    */
   isInitialized(): boolean {
-    try {
-      const db = this.getDb();
-      const result = db
-        .prepare(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'"
-        )
-        .get();
-      return !!result;
-    } catch {
-      return false;
-    }
+    return database.isInitialized();
   }
 
   // ===========================================================================
@@ -393,75 +374,8 @@ class InferenceQueueService {
    * Initialize database tables if they don't exist
    */
   initializeDatabase(): void {
-    const db = this.getDb();
-
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS jobs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        job_type TEXT NOT NULL CHECK(job_type IN ('transcribe', 'summarize')),
-        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
-        provider TEXT NOT NULL DEFAULT 'local' CHECK(provider IN ('local', 'deepgram')),
-        input_file_path TEXT,
-        input_text TEXT,
-        output_text TEXT,
-        error_message TEXT,
-        audio_file_id TEXT,
-        metadata TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        started_at TEXT,
-        completed_at TEXT,
-        processing_time_ms INTEGER,
-        model_used TEXT,
-        raw_response TEXT,
-        raw_response_type TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS audio_submissions (
-        id TEXT PRIMARY KEY,
-        filename TEXT NOT NULL,
-        original_filename TEXT,
-        file_path TEXT NOT NULL,
-        mime_type TEXT,
-        file_size INTEGER,
-        duration_seconds REAL,
-        transcript TEXT,
-        transcript_job_id INTEGER REFERENCES jobs(id),
-        transcribed_at TEXT,
-        summary TEXT,
-        summary_job_id INTEGER REFERENCES jobs(id),
-        summarized_at TEXT,
-        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'transcribing', 'summarizing', 'completed', 'failed')),
-        error_message TEXT,
-        metadata TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
-      CREATE INDEX IF NOT EXISTS idx_jobs_audio_file_id ON jobs(audio_file_id);
-      CREATE INDEX IF NOT EXISTS idx_submissions_status ON audio_submissions(status);
-    `);
-
-    // Migration: add new columns if they don't exist (for existing databases)
-    this.migrateDatabase();
-  }
-
-  /**
-   * Run database migrations for existing databases
-   */
-  private migrateDatabase(): void {
-    const db = this.getDb();
-
-    // Check if raw_response column exists
-    const columns = db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[];
-    const columnNames = columns.map((c) => c.name);
-
-    if (!columnNames.includes("raw_response")) {
-      db.exec("ALTER TABLE jobs ADD COLUMN raw_response TEXT");
-    }
-    if (!columnNames.includes("raw_response_type")) {
-      db.exec("ALTER TABLE jobs ADD COLUMN raw_response_type TEXT");
-    }
+    // Delegate to the database manager which handles migrations
+    database.initialize();
   }
 
   /**
@@ -614,10 +528,197 @@ class InferenceQueueService {
    * Close database connection
    */
   close(): void {
-    if (this.db) {
-      this.db.close();
-      this.db = null;
+    database.close();
+  }
+
+  // ===========================================================================
+  // Additional Query Methods (for routes)
+  // ===========================================================================
+
+  /**
+   * Get submissions with optional filtering (for GET /list)
+   */
+  getSubmissionsFiltered(query: {
+    maxDuration?: number;
+    minDuration?: number;
+    limit?: number;
+    offset?: number;
+  }): { submissions: AudioSubmission[]; total: number } {
+    const db = this.getDb();
+
+    // Build WHERE clause
+    const conditions: string[] = [];
+    const params: (number | string)[] = [];
+
+    if (query.maxDuration !== undefined) {
+      conditions.push("duration_seconds <= ?");
+      params.push(query.maxDuration);
     }
+    if (query.minDuration !== undefined) {
+      conditions.push("duration_seconds >= ?");
+      params.push(query.minDuration);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    // Get total count
+    const countStmt = db.prepare(`SELECT COUNT(*) as total FROM audio_submissions ${whereClause}`);
+    const countResult = countStmt.get(...params) as { total: number };
+
+    // Get paginated results
+    const limit = query.limit || 100;
+    const offset = query.offset || 0;
+
+    const dataStmt = db.prepare(`
+      SELECT * FROM audio_submissions
+      ${whereClause}
+      ORDER BY created_at DESC
+      LIMIT ? OFFSET ?
+    `);
+
+    const submissions = dataStmt.all(...params, limit, offset) as AudioSubmission[];
+
+    return { submissions, total: countResult.total };
+  }
+
+  /**
+   * Get a submission by original filename (for GET /download)
+   */
+  getSubmissionByFilename(filename: string): AudioSubmission | null {
+    const db = this.getDb();
+
+    // Try original_filename first, then filename
+    const stmt = db.prepare(`
+      SELECT * FROM audio_submissions
+      WHERE original_filename = ? OR filename = ?
+      LIMIT 1
+    `);
+
+    return stmt.get(filename, filename) as AudioSubmission | null;
+  }
+
+  /**
+   * Delete a submission and its associated data (for DELETE /files/:id)
+   * Returns true if the submission was found and deleted
+   */
+  deleteSubmission(submissionId: string): boolean {
+    const db = this.getDb();
+
+    // Get the submission first to find the file path
+    const submission = this.getSubmission(submissionId);
+    if (!submission) {
+      return false;
+    }
+
+    // Delete associated jobs
+    db.prepare("DELETE FROM jobs WHERE audio_file_id = ?").run(submissionId);
+
+    // Delete the submission
+    const result = db.prepare("DELETE FROM audio_submissions WHERE id = ?").run(submissionId);
+
+    // Delete the file from disk if it exists
+    if (submission.file_path && fs.existsSync(submission.file_path)) {
+      try {
+        fs.unlinkSync(submission.file_path);
+      } catch (err) {
+        console.error(`Failed to delete file ${submission.file_path}:`, err);
+      }
+    }
+
+    return result.changes > 0;
+  }
+
+  // ===========================================================================
+  // Heartbeat Methods (for stuck job detection)
+  // ===========================================================================
+
+  /**
+   * Update job heartbeat - called when job shows progress (e.g., token received)
+   */
+  updateJobHeartbeat(jobId: number, heartbeatCount: number): void {
+    const db = this.getDb();
+
+    const stmt = db.prepare(`
+      UPDATE jobs
+      SET last_heartbeat = datetime('now'),
+          heartbeat_count = ?
+      WHERE id = ?
+    `);
+
+    stmt.run(heartbeatCount, jobId);
+  }
+
+  /**
+   * Mark that the model was verified as loaded before job started
+   */
+  markModelVerified(jobId: number): void {
+    const db = this.getDb();
+
+    db.prepare("UPDATE jobs SET model_verified = 1 WHERE id = ?").run(jobId);
+  }
+
+  /**
+   * Find jobs that are stuck (processing but no heartbeat within timeout)
+   * Returns jobs that have been processing longer than their timeout_seconds
+   * without receiving a heartbeat
+   */
+  findStuckJobs(): Job[] {
+    const db = this.getDb();
+
+    const stmt = db.prepare(`
+      SELECT * FROM jobs
+      WHERE status = 'processing'
+        AND (
+          -- Job started but never got a heartbeat, and started_at is older than timeout
+          (last_heartbeat IS NULL
+           AND datetime(started_at, '+' || COALESCE(timeout_seconds, 300) || ' seconds') < datetime('now'))
+          OR
+          -- Job got heartbeats but last one is older than timeout
+          (last_heartbeat IS NOT NULL
+           AND datetime(last_heartbeat, '+' || COALESCE(timeout_seconds, 300) || ' seconds') < datetime('now'))
+        )
+    `);
+
+    return stmt.all() as Job[];
+  }
+
+  /**
+   * Recover a stuck job by marking it as failed
+   */
+  recoverStuckJob(jobId: number, reason: string): void {
+    const db = this.getDb();
+
+    const job = this.getJob(jobId);
+    if (!job) return;
+
+    // Mark job as failed
+    this.failJob(jobId, `Job stuck: ${reason}`);
+
+    // Update submission status if linked
+    if (job.audio_file_id) {
+      this.updateSubmissionStatus(
+        job.audio_file_id,
+        "failed",
+        `Job stuck: ${reason}`
+      );
+    }
+  }
+
+  /**
+   * Get job with heartbeat info for monitoring
+   */
+  getJobWithHeartbeat(jobId: number): (Job & {
+    last_heartbeat: string | null;
+    heartbeat_count: number;
+    model_verified: number;
+  }) | null {
+    const db = this.getDb();
+    const stmt = db.prepare("SELECT * FROM jobs WHERE id = ?");
+    return stmt.get(jobId) as (Job & {
+      last_heartbeat: string | null;
+      heartbeat_count: number;
+      model_verified: number;
+    }) | null;
   }
 }
 
