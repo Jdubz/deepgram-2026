@@ -24,6 +24,14 @@ export interface DeepgramConfig {
   timeoutMs: number;
 }
 
+export interface TextAnalysisResult {
+  topics: Array<{ topic: string; confidence: number }>;
+  intents: Array<{ intent: string; confidence: number }>;
+  summary: string;
+  processingTimeMs: number;
+  rawResponse: unknown;
+}
+
 const DEFAULT_CONFIG: DeepgramConfig = {
   apiKey: process.env.DEEPGRAM_API_KEY || "",
   baseUrl: "https://api.deepgram.com",
@@ -190,6 +198,138 @@ class DeepgramService implements InferenceProvider {
         text: summary,
         model: "deepgram-text-intelligence",
         tokensUsed,
+        processingTimeMs: Date.now() - startTime,
+        rawResponse,
+      };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  /**
+   * Analyze text using Deepgram's Text Intelligence API
+   * POST /v1/read with topics, intents, and summarize
+   *
+   * Returns topics, intents, and summary for the given text
+   */
+  async analyzeText(
+    text: string,
+    options: {
+      topics?: boolean;
+      intents?: boolean;
+      summarize?: boolean;
+    } = { topics: true, intents: true, summarize: true }
+  ): Promise<TextAnalysisResult> {
+    if (!this.config.apiKey) {
+      throw new Error("Deepgram API key not configured. Set DEEPGRAM_API_KEY environment variable.");
+    }
+
+    const startTime = Date.now();
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.config.timeoutMs);
+
+    try {
+      const params = new URLSearchParams({
+        language: this.config.language,
+      });
+
+      if (options.topics !== false) {
+        params.append("topics", "true");
+      }
+      if (options.intents !== false) {
+        params.append("intents", "true");
+      }
+      if (options.summarize !== false) {
+        params.append("summarize", "v2");
+      }
+
+      const response = await fetch(
+        `${this.config.baseUrl}/v1/read?${params}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Token ${this.config.apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ text }),
+          signal: controller.signal,
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Deepgram text analysis failed: ${response.status} - ${error}`);
+      }
+
+      const rawResponse = await response.json();
+
+      // Extract analysis results from Deepgram Text Intelligence response
+      interface DeepgramReadAnalysisResponse {
+        results?: {
+          topics?: {
+            segments?: Array<{
+              text?: string;
+              topics?: Array<{
+                topic?: string;
+                confidence_score?: number;
+              }>;
+            }>;
+          };
+          intents?: {
+            segments?: Array<{
+              text?: string;
+              intents?: Array<{
+                intent?: string;
+                confidence_score?: number;
+              }>;
+            }>;
+          };
+          summary?: {
+            text?: string;
+          };
+        };
+        metadata?: {
+          request_id?: string;
+        };
+      }
+
+      const dgResponse = rawResponse as DeepgramReadAnalysisResponse;
+
+      // Collect all unique topics across segments
+      const topicsMap = new Map<string, number>();
+      for (const segment of dgResponse.results?.topics?.segments || []) {
+        for (const topic of segment.topics || []) {
+          if (topic.topic) {
+            const existing = topicsMap.get(topic.topic) || 0;
+            topicsMap.set(topic.topic, Math.max(existing, topic.confidence_score || 0));
+          }
+        }
+      }
+      const topics = [...topicsMap.entries()]
+        .map(([topic, confidence]) => ({ topic, confidence }))
+        .sort((a, b) => b.confidence - a.confidence);
+
+      // Collect all unique intents across segments
+      const intentsMap = new Map<string, number>();
+      for (const segment of dgResponse.results?.intents?.segments || []) {
+        for (const intent of segment.intents || []) {
+          if (intent.intent) {
+            const existing = intentsMap.get(intent.intent) || 0;
+            intentsMap.set(intent.intent, Math.max(existing, intent.confidence_score || 0));
+          }
+        }
+      }
+      const intents = [...intentsMap.entries()]
+        .map(([intent, confidence]) => ({ intent, confidence }))
+        .sort((a, b) => b.confidence - a.confidence);
+
+      const summary = dgResponse.results?.summary?.text || "";
+
+      return {
+        topics,
+        intents,
+        summary,
         processingTimeMs: Date.now() - startTime,
         rawResponse,
       };

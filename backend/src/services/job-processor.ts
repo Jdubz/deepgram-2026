@@ -20,6 +20,8 @@ import { inferenceQueue, Job, SubmissionStatus } from "./inference-queue.js";
 import { getProvider } from "./provider-factory.js";
 import { LocalAIService } from "./localai.js";
 import { jobEventHub } from "./job-event-hub.js";
+import { deepgram } from "./deepgram.js";
+import { streamHub } from "./stream-hub.js";
 
 export interface ProcessorStatus {
   isRunning: boolean;
@@ -153,8 +155,8 @@ class JobProcessorService {
     this.currentJobType = job.job_type;
 
     try {
-      // Update submission status if linked
-      if (job.audio_file_id) {
+      // Update submission status if linked (not for analyze_chunk jobs)
+      if (job.audio_file_id && job.job_type !== "analyze_chunk") {
         const status: SubmissionStatus =
           job.job_type === "transcribe" ? "transcribing" : "summarizing";
         inferenceQueue.updateSubmissionStatus(job.audio_file_id, status);
@@ -165,6 +167,8 @@ class JobProcessorService {
         await this.processTranscribeJob(job);
       } else if (job.job_type === "summarize") {
         await this.processSummarizeJob(job);
+      } else if (job.job_type === "analyze_chunk") {
+        await this.processAnalyzeChunkJob(job);
       }
     } catch (error) {
       const errorMessage =
@@ -353,6 +357,71 @@ class JobProcessorService {
       );
       inferenceQueue.updateSubmissionStatus(job.audio_file_id, "completed");
     }
+  }
+
+  /**
+   * Process a chunk analysis job
+   * Analyzes a stream chunk with Deepgram's Text Intelligence API
+   */
+  private async processAnalyzeChunkJob(job: Job): Promise<void> {
+    if (!job.input_text) {
+      throw new Error("Analyze chunk job missing input_text");
+    }
+
+    if (!job.metadata) {
+      throw new Error("Analyze chunk job missing metadata");
+    }
+
+    const metadata = JSON.parse(job.metadata);
+    const { chunkId, sessionId } = metadata;
+
+    if (!chunkId || !sessionId) {
+      throw new Error("Analyze chunk job metadata missing chunkId or sessionId");
+    }
+
+    console.log(
+      `[JobProcessor] Analyzing chunk ${chunkId} (${job.input_text.length} chars)...`
+    );
+
+    // Call Deepgram Text Intelligence API
+    const result = await deepgram.analyzeText(job.input_text, {
+      topics: true,
+      intents: true,
+      summarize: true,
+    });
+
+    console.log(
+      `[JobProcessor] Chunk analysis complete (${result.processingTimeMs}ms): ` +
+      `${result.topics.length} topics, ${result.intents.length} intents`
+    );
+
+    // Update chunk with analysis results
+    inferenceQueue.updateChunkAnalysis(chunkId, {
+      topics: result.topics,
+      intents: result.intents,
+      summary: result.summary,
+    });
+
+    // Mark job as completed
+    inferenceQueue.completeJob(
+      job.id,
+      JSON.stringify({ topics: result.topics, intents: result.intents, summary: result.summary }),
+      "deepgram-text-intelligence",
+      result.processingTimeMs,
+      undefined,
+      result.rawResponse
+    );
+
+    // Emit job completed event
+    jobEventHub.emitJobCompleted(job.id, result.processingTimeMs, null);
+    jobEventHub.emitQueueStatus();
+
+    // Broadcast chunk_analyzed to connected clients
+    streamHub.broadcastChunkAnalyzed(sessionId, chunkId, {
+      topics: result.topics,
+      intents: result.intents,
+      summary: result.summary,
+    });
   }
 
   /**

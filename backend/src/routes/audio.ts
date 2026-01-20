@@ -299,6 +299,7 @@ router.get("/download", async (req: Request, res: Response): Promise<void> => {
  * GET /info
  *
  * Get transcript and summary for a processed audio file.
+ * If the file was created from a stream, includes session and chunk data.
  *
  * Query parameters:
  *   - id: Submission ID (required)
@@ -370,6 +371,56 @@ router.get("/info", async (req: Request, res: Response): Promise<void> => {
       // "pending" and "processing" job statuses both show as "pending" in UI
     }
 
+    // Check for stream session linked to this submission
+    const streamSession = inferenceQueue.getStreamSessionBySubmission(id as string);
+    let streamSessionData = null;
+
+    if (streamSession) {
+      // Get all chunks for the session
+      const chunks = inferenceQueue.getSessionChunks(streamSession.id);
+
+      // Get unique speakers
+      const speakers = [...new Set(chunks.map(c => c.speaker).filter(s => s !== null))];
+
+      // Build combined transcript from chunks if no standard transcript
+      let combinedTranscript = submission.transcript;
+      if (!combinedTranscript && chunks.length > 0) {
+        combinedTranscript = chunks.map(c => c.transcript).join(" ");
+      }
+
+      streamSessionData = {
+        id: streamSession.id,
+        durationMs: streamSession.total_duration_ms,
+        chunkCount: streamSession.chunk_count,
+        speakers,
+        status: streamSession.status,
+        startedAt: streamSession.started_at,
+        endedAt: streamSession.ended_at,
+        chunks: chunks.map(chunk => ({
+          id: chunk.id,
+          index: chunk.chunk_index,
+          speaker: chunk.speaker,
+          transcript: chunk.transcript,
+          startTimeMs: chunk.start_time_ms,
+          endTimeMs: chunk.end_time_ms,
+          confidence: chunk.confidence,
+          analysisStatus: chunk.analysis_status,
+          topics: chunk.topics ? JSON.parse(chunk.topics) : null,
+          intents: chunk.intents ? JSON.parse(chunk.intents) : null,
+          summary: chunk.summary,
+        })),
+      };
+
+      // If this is a stream file, treat the stream as the source of truth
+      // For streams, we have real-time transcripts via chunks
+      if (submission.status === "streaming" || submission.status === "completed") {
+        transcriptStatus = "completed";
+        if (combinedTranscript) {
+          submission.transcript = combinedTranscript;
+        }
+      }
+    }
+
     // Always return file info with job-specific statuses
     res.json({
       id: submission.id,
@@ -390,6 +441,8 @@ router.get("/info", async (req: Request, res: Response): Promise<void> => {
       summaryProvider: summaryJob?.provider || null,
       summaryModel: summaryJob?.model_used || null,
       summaryConfidence: submission.summary_confidence || null,
+      // Stream session data (if this submission was from a stream)
+      streamSession: streamSessionData,
     });
   } catch (error) {
     console.error("Info error:", error);

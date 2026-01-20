@@ -14,9 +14,11 @@ import fs from "fs";
 import { database } from "../db/database.js";
 import { Provider } from "../types/index.js";
 
-export type JobType = "transcribe" | "summarize";
+export type JobType = "transcribe" | "summarize" | "analyze_chunk";
 export type JobStatus = "pending" | "processing" | "completed" | "failed";
-export type SubmissionStatus = "pending" | "transcribing" | "summarizing" | "completed" | "failed";
+export type SubmissionStatus = "pending" | "transcribing" | "summarizing" | "completed" | "failed" | "streaming";
+export type AnalysisStatus = "pending" | "processing" | "completed" | "skipped";
+export type SessionStatus = "active" | "ended";
 
 export interface Job {
   id: number;
@@ -96,6 +98,69 @@ export interface QueueStatus {
   completed: number;
   failed: number;
   avgProcessingTimeMs: number | null;
+}
+
+// ===========================================================================
+// Stream Session and Chunk Types
+// ===========================================================================
+
+export interface StreamSession {
+  id: string;
+  submission_id: string;
+  title: string | null;
+  started_at: string;
+  ended_at: string | null;
+  total_duration_ms: number;
+  chunk_count: number;
+  status: SessionStatus;
+}
+
+export interface StreamChunk {
+  id: number;
+  session_id: string;
+  chunk_index: number;
+  speaker: number | null;
+  transcript: string;
+  confidence: number | null;
+  start_time_ms: number;
+  end_time_ms: number;
+  word_count: number;
+  topics: string | null;
+  intents: string | null;
+  summary: string | null;
+  analysis_job_id: number | null;
+  analysis_status: AnalysisStatus;
+  analyzed_at: string | null;
+  created_at: string;
+}
+
+export interface CreateStreamSessionParams {
+  id: string;
+  submissionId: string;
+  title?: string;
+}
+
+export interface CreateStreamChunkParams {
+  sessionId: string;
+  chunkIndex: number;
+  speaker: number | null;
+  transcript: string;
+  confidence?: number;
+  startTimeMs: number;
+  endTimeMs: number;
+  wordCount?: number;
+}
+
+export interface CreateAnalyzeChunkJobParams {
+  chunkId: number;
+  sessionId: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ChunkAnalysisResult {
+  topics: Array<{ topic: string; confidence: number }>;
+  intents: Array<{ intent: string; confidence: number }>;
+  summary: string;
 }
 
 class InferenceQueueService {
@@ -539,6 +604,291 @@ class InferenceQueueService {
    */
   close(): void {
     database.close();
+  }
+
+  // ===========================================================================
+  // Stream Sessions
+  // ===========================================================================
+
+  /**
+   * Create a new stream session linked to an audio submission
+   */
+  createStreamSession(params: CreateStreamSessionParams): StreamSession {
+    const db = this.getDb();
+
+    const stmt = db.prepare(`
+      INSERT INTO stream_sessions (id, submission_id, title)
+      VALUES (?, ?, ?)
+    `);
+
+    stmt.run(params.id, params.submissionId, params.title || null);
+
+    return this.getStreamSession(params.id)!;
+  }
+
+  /**
+   * Get a stream session by ID
+   */
+  getStreamSession(sessionId: string): StreamSession | null {
+    const db = this.getDb();
+    const stmt = db.prepare("SELECT * FROM stream_sessions WHERE id = ?");
+    return stmt.get(sessionId) as StreamSession | null;
+  }
+
+  /**
+   * Get stream session by submission ID
+   */
+  getStreamSessionBySubmission(submissionId: string): StreamSession | null {
+    const db = this.getDb();
+    const stmt = db.prepare("SELECT * FROM stream_sessions WHERE submission_id = ?");
+    return stmt.get(submissionId) as StreamSession | null;
+  }
+
+  /**
+   * Update stream session (for ending session, updating duration/chunk count)
+   */
+  updateStreamSession(
+    sessionId: string,
+    updates: {
+      status?: SessionStatus;
+      endedAt?: string;
+      totalDurationMs?: number;
+      chunkCount?: number;
+    }
+  ): void {
+    const db = this.getDb();
+
+    const setClauses: string[] = [];
+    const params: (string | number)[] = [];
+
+    if (updates.status !== undefined) {
+      setClauses.push("status = ?");
+      params.push(updates.status);
+    }
+    if (updates.endedAt !== undefined) {
+      setClauses.push("ended_at = ?");
+      params.push(updates.endedAt);
+    }
+    if (updates.totalDurationMs !== undefined) {
+      setClauses.push("total_duration_ms = ?");
+      params.push(updates.totalDurationMs);
+    }
+    if (updates.chunkCount !== undefined) {
+      setClauses.push("chunk_count = ?");
+      params.push(updates.chunkCount);
+    }
+
+    if (setClauses.length === 0) return;
+
+    params.push(sessionId);
+    const sql = `UPDATE stream_sessions SET ${setClauses.join(", ")} WHERE id = ?`;
+    db.prepare(sql).run(...params);
+  }
+
+  /**
+   * End a stream session
+   */
+  endStreamSession(sessionId: string, totalDurationMs: number): void {
+    const db = this.getDb();
+
+    // Get chunk count
+    const countResult = db.prepare(
+      "SELECT COUNT(*) as count FROM stream_chunks WHERE session_id = ?"
+    ).get(sessionId) as { count: number };
+
+    db.prepare(`
+      UPDATE stream_sessions
+      SET status = 'ended',
+          ended_at = datetime('now'),
+          total_duration_ms = ?,
+          chunk_count = ?
+      WHERE id = ?
+    `).run(totalDurationMs, countResult.count, sessionId);
+  }
+
+  /**
+   * Finalize a stream submission with file size and combined transcript
+   */
+  finalizeStreamSubmission(
+    submissionId: string,
+    fileSize: number,
+    combinedTranscript?: string
+  ): void {
+    const db = this.getDb();
+
+    if (combinedTranscript) {
+      db.prepare(`
+        UPDATE audio_submissions
+        SET file_size = ?,
+            transcript = ?,
+            status = 'completed',
+            updated_at = datetime('now')
+        WHERE id = ?
+      `).run(fileSize, combinedTranscript, submissionId);
+    } else {
+      db.prepare(`
+        UPDATE audio_submissions
+        SET file_size = ?,
+            status = 'completed',
+            updated_at = datetime('now')
+        WHERE id = ?
+      `).run(fileSize, submissionId);
+    }
+  }
+
+  // ===========================================================================
+  // Stream Chunks
+  // ===========================================================================
+
+  /**
+   * Create a new stream chunk (utterance with speaker info)
+   */
+  createStreamChunk(params: CreateStreamChunkParams): StreamChunk {
+    const db = this.getDb();
+
+    const stmt = db.prepare(`
+      INSERT INTO stream_chunks
+      (session_id, chunk_index, speaker, transcript, confidence, start_time_ms, end_time_ms, word_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const result = stmt.run(
+      params.sessionId,
+      params.chunkIndex,
+      params.speaker,
+      params.transcript,
+      params.confidence ?? null,
+      params.startTimeMs,
+      params.endTimeMs,
+      params.wordCount ?? params.transcript.split(/\s+/).filter(Boolean).length
+    );
+
+    return this.getStreamChunk(result.lastInsertRowid as number)!;
+  }
+
+  /**
+   * Get a stream chunk by ID
+   */
+  getStreamChunk(chunkId: number): StreamChunk | null {
+    const db = this.getDb();
+    const stmt = db.prepare("SELECT * FROM stream_chunks WHERE id = ?");
+    return stmt.get(chunkId) as StreamChunk | null;
+  }
+
+  /**
+   * Get all chunks for a session, ordered by index
+   */
+  getSessionChunks(sessionId: string): StreamChunk[] {
+    const db = this.getDb();
+    const stmt = db.prepare(
+      "SELECT * FROM stream_chunks WHERE session_id = ? ORDER BY chunk_index ASC"
+    );
+    return stmt.all(sessionId) as StreamChunk[];
+  }
+
+  /**
+   * Update chunk analysis status
+   */
+  updateChunkAnalysisStatus(
+    chunkId: number,
+    status: AnalysisStatus,
+    jobId?: number
+  ): void {
+    const db = this.getDb();
+
+    if (jobId !== undefined) {
+      db.prepare(`
+        UPDATE stream_chunks
+        SET analysis_status = ?, analysis_job_id = ?
+        WHERE id = ?
+      `).run(status, jobId, chunkId);
+    } else {
+      db.prepare(`
+        UPDATE stream_chunks
+        SET analysis_status = ?
+        WHERE id = ?
+      `).run(status, chunkId);
+    }
+  }
+
+  /**
+   * Update chunk with analysis results
+   */
+  updateChunkAnalysis(
+    chunkId: number,
+    results: ChunkAnalysisResult
+  ): void {
+    const db = this.getDb();
+
+    db.prepare(`
+      UPDATE stream_chunks
+      SET topics = ?,
+          intents = ?,
+          summary = ?,
+          analysis_status = 'completed',
+          analyzed_at = datetime('now')
+      WHERE id = ?
+    `).run(
+      JSON.stringify(results.topics),
+      JSON.stringify(results.intents),
+      results.summary,
+      chunkId
+    );
+  }
+
+  /**
+   * Get chunks pending analysis for a session
+   */
+  getPendingAnalysisChunks(sessionId: string): StreamChunk[] {
+    const db = this.getDb();
+    const stmt = db.prepare(`
+      SELECT * FROM stream_chunks
+      WHERE session_id = ? AND analysis_status = 'pending'
+      ORDER BY chunk_index ASC
+    `);
+    return stmt.all(sessionId) as StreamChunk[];
+  }
+
+  // ===========================================================================
+  // Analyze Chunk Jobs
+  // ===========================================================================
+
+  /**
+   * Create an analyze_chunk job for a stream chunk
+   */
+  createAnalyzeChunkJob(params: CreateAnalyzeChunkJobParams): number {
+    const db = this.getDb();
+
+    // Get the chunk to get its transcript
+    const chunk = this.getStreamChunk(params.chunkId);
+    if (!chunk) {
+      throw new Error(`Chunk ${params.chunkId} not found`);
+    }
+
+    // Create the job with chunk info in metadata
+    const metadata = {
+      ...params.metadata,
+      chunkId: params.chunkId,
+      sessionId: params.sessionId,
+    };
+
+    const stmt = db.prepare(`
+      INSERT INTO jobs (job_type, input_text, metadata, provider)
+      VALUES ('analyze_chunk', ?, ?, ?)
+    `);
+
+    const result = stmt.run(
+      chunk.transcript,
+      JSON.stringify(metadata),
+      Provider.DEEPGRAM
+    );
+
+    const jobId = result.lastInsertRowid as number;
+
+    // Update chunk to reference the job
+    this.updateChunkAnalysisStatus(params.chunkId, "processing", jobId);
+
+    return jobId;
   }
 
   // ===========================================================================

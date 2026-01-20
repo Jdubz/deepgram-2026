@@ -5,10 +5,15 @@
  * - Single authenticated broadcaster sends audio
  * - Multiple viewers receive live transcription
  * - Relays audio to Deepgram and broadcasts transcripts
+ * - Saves streamed audio to files and persists chunks with analysis
  */
 
 import WebSocket from "ws";
-import { DeepgramStream, TranscriptSegment } from "./deepgram-stream.js";
+import fs from "fs";
+import path from "path";
+import { randomUUID } from "crypto";
+import { DeepgramStream, TranscriptSegment, UtteranceEndEvent } from "./deepgram-stream.js";
+import { inferenceQueue } from "./inference-queue.js";
 
 // Message types from clients
 interface AuthMessage {
@@ -50,6 +55,34 @@ interface SessionMessage {
   type: "session_started" | "session_ended";
 }
 
+interface SessionCreatedMessage {
+  type: "session_created";
+  sessionId: string;
+  submissionId: string;
+}
+
+interface ChunkCreatedMessage {
+  type: "chunk_created";
+  sessionId: string;
+  chunk: {
+    id: number;
+    index: number;
+    speaker: number | null;
+    transcript: string;
+    startTimeMs: number;
+    endTimeMs: number;
+  };
+}
+
+interface ChunkAnalyzedMessage {
+  type: "chunk_analyzed";
+  sessionId: string;
+  chunkId: number;
+  topics: Array<{ topic: string; confidence: number }>;
+  intents: Array<{ intent: string; confidence: number }>;
+  summary: string;
+}
+
 interface StatusMessage {
   type: "status";
   isLive: boolean;
@@ -66,6 +99,9 @@ type ServerMessage =
   | AuthFailedMessage
   | TranscriptMessage
   | SessionMessage
+  | SessionCreatedMessage
+  | ChunkCreatedMessage
+  | ChunkAnalyzedMessage
   | StatusMessage
   | ErrorMessage;
 
@@ -79,6 +115,12 @@ const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
 const MAX_AUTH_ATTEMPTS = 5;
 const MAX_VIEWERS = 50;
 
+// Minimum word count for analysis (skip short utterances)
+const MIN_WORDS_FOR_ANALYSIS = 20;
+
+// Uploads directory path
+const UPLOADS_DIR = path.join(process.cwd(), "uploads");
+
 export class StreamHub {
   private broadcaster: WebSocket | null = null;
   private broadcasterAuthenticated = false;
@@ -89,12 +131,24 @@ export class StreamHub {
   private rateLimitMap: Map<string, RateLimitEntry> = new Map();
   private sessionStartTime: number | null = null;
 
+  // Audio file persistence
+  private currentSubmissionId: string | null = null;
+  private currentSessionId: string | null = null;
+  private audioFileStream: fs.WriteStream | null = null;
+  private audioFilePath: string | null = null;
+  private totalAudioBytes = 0;
+
+  // Chunk tracking
+  private chunkIndex = 0;
+  private accumulatedSegments: TranscriptSegment[] = [];
+  private utteranceStartTimeMs = 0;
+
   constructor() {
     this.broadcastPassword = process.env.STREAM_PASSWORD || "";
     this.deepgramApiKey = process.env.DEEPGRAM_API_KEY || "";
 
     if (!this.broadcastPassword) {
-      console.warn("[StreamHub] STREAM_PASSWORD not set - streaming disabled");
+      console.warn("[StreamHub] STREAM_PASSWORD not set - only localhost can broadcast");
     }
     if (!this.deepgramApiKey) {
       console.warn("[StreamHub] DEEPGRAM_API_KEY not set - streaming will fail");
@@ -102,14 +156,28 @@ export class StreamHub {
   }
 
   /**
+   * Check if an IP address is localhost
+   */
+  private isLocalhost(ip: string): boolean {
+    return (
+      ip === "127.0.0.1" ||
+      ip === "::1" ||
+      ip === "localhost" ||
+      ip === "::ffff:127.0.0.1"
+    );
+  }
+
+  /**
    * Handle a new broadcaster connection
    */
   handleBroadcaster(ws: WebSocket, clientIp: string): void {
-    // Check if streaming is configured
-    if (!this.broadcastPassword) {
+    const isLocal = this.isLocalhost(clientIp);
+
+    // Check if streaming is allowed
+    if (!this.broadcastPassword && !isLocal) {
       this.sendMessage(ws, {
         type: "error",
-        message: "Streaming not configured. Set STREAM_PASSWORD environment variable.",
+        message: "Streaming not configured. Only localhost connections are allowed.",
       });
       ws.close();
       return;
@@ -132,7 +200,12 @@ export class StreamHub {
 
     this.broadcaster = ws;
     this.broadcasterAuthenticated = false;
-    console.log(`[StreamHub] Broadcaster connected from ${clientIp}`);
+    console.log(`[StreamHub] Broadcaster connected from ${clientIp} (localhost: ${isLocal})`);
+
+    // Auto-authenticate localhost connections
+    if (isLocal) {
+      this.autoAuthenticateBroadcaster(ws, clientIp);
+    }
 
     ws.on("message", (data: Buffer) => {
       this.handleBroadcasterMessage(ws, data, clientIp);
@@ -182,11 +255,46 @@ export class StreamHub {
         // Base64 encoded audio
         const audioBuffer = Buffer.from(message.data, "base64");
         this.relayAudio(audioBuffer);
+      } else if (message.type === "auth") {
+        // Ignore auth messages if already authenticated (e.g., localhost auto-auth)
+        // Just acknowledge it
+        console.log("[StreamHub] Ignoring redundant auth message (already authenticated)");
       }
     } catch {
       // Not JSON - treat as raw binary audio data
       this.relayAudio(data);
     }
+  }
+
+  /**
+   * Auto-authenticate localhost connections without password
+   */
+  private autoAuthenticateBroadcaster(ws: WebSocket, clientIp: string): void {
+    this.broadcasterAuthenticated = true;
+    console.log(`[StreamHub] Broadcaster auto-authenticated from localhost (${clientIp})`);
+
+    this.sendMessage(ws, { type: "auth_success" });
+
+    // Initialize session and file storage
+    this.initializeSession();
+
+    // Start Deepgram connection
+    this.startDeepgramStream();
+
+    // Notify viewers
+    this.sessionStartTime = Date.now();
+    this.broadcastToViewers({ type: "session_started" });
+
+    // Broadcast session_created with IDs
+    if (this.currentSessionId && this.currentSubmissionId) {
+      this.broadcastToViewers({
+        type: "session_created",
+        sessionId: this.currentSessionId,
+        submissionId: this.currentSubmissionId,
+      });
+    }
+
+    this.broadcastStatus();
   }
 
   private handleAuth(ws: WebSocket, password: string, clientIp: string): void {
@@ -235,13 +343,74 @@ export class StreamHub {
 
     this.sendMessage(ws, { type: "auth_success" });
 
+    // Initialize session and file storage
+    this.initializeSession();
+
     // Start Deepgram connection
     this.startDeepgramStream();
 
     // Notify viewers
     this.sessionStartTime = Date.now();
     this.broadcastToViewers({ type: "session_started" });
+
+    // Broadcast session_created with IDs
+    if (this.currentSessionId && this.currentSubmissionId) {
+      this.broadcastToViewers({
+        type: "session_created",
+        sessionId: this.currentSessionId,
+        submissionId: this.currentSubmissionId,
+      });
+    }
+
     this.broadcastStatus();
+  }
+
+  private initializeSession(): void {
+    // Ensure uploads directory exists
+    if (!fs.existsSync(UPLOADS_DIR)) {
+      fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+    }
+
+    // Generate IDs
+    this.currentSubmissionId = randomUUID();
+    this.currentSessionId = randomUUID();
+
+    // Create filename with timestamp
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const filename = `stream-${timestamp}.webm`;
+    this.audioFilePath = path.join(UPLOADS_DIR, filename);
+
+    // Create audio file write stream
+    this.audioFileStream = fs.createWriteStream(this.audioFilePath);
+    this.totalAudioBytes = 0;
+
+    // Create audio submission record
+    inferenceQueue.createSubmission({
+      id: this.currentSubmissionId,
+      filename: filename,
+      filePath: this.audioFilePath,
+      originalFilename: filename,
+      mimeType: "audio/webm",
+      autoProcess: false, // Don't auto-transcribe, we're doing real-time
+    });
+
+    // Update submission status to streaming
+    inferenceQueue.updateSubmissionStatus(this.currentSubmissionId, "streaming");
+
+    // Create stream session linked to submission
+    inferenceQueue.createStreamSession({
+      id: this.currentSessionId,
+      submissionId: this.currentSubmissionId,
+      title: `Live Stream ${timestamp}`,
+    });
+
+    // Reset chunk tracking
+    this.chunkIndex = 0;
+    this.accumulatedSegments = [];
+    this.utteranceStartTimeMs = 0;
+
+    console.log(`[StreamHub] Session initialized: ${this.currentSessionId}`);
+    console.log(`[StreamHub] Audio file: ${this.audioFilePath}`);
   }
 
   private startDeepgramStream(): void {
@@ -262,10 +431,13 @@ export class StreamHub {
         model: process.env.DEEPGRAM_MODEL || "nova-2",
         language: process.env.DEEPGRAM_LANGUAGE || "en",
         diarize: true,
-        interimResults: true,
+        interimResults: process.env.DEEPGRAM_INTERIM_RESULTS !== "false",
+        utteranceEndMs: 1500,
+        smartFormat: true,
       },
       {
         onTranscript: (segment) => this.handleTranscript(segment),
+        onUtteranceEnd: (event) => this.handleUtteranceEnd(event),
         onError: (error) => {
           console.error("[StreamHub] Deepgram error:", error);
           if (this.broadcaster) {
@@ -297,6 +469,15 @@ export class StreamHub {
       timestamp: Date.now(),
     };
 
+    // Accumulate final segments for chunk building
+    if (segment.isFinal && segment.text.trim()) {
+      // Track utterance start time from first segment
+      if (this.accumulatedSegments.length === 0) {
+        this.utteranceStartTimeMs = segment.start * 1000;
+      }
+      this.accumulatedSegments.push(segment);
+    }
+
     // Send to broadcaster
     if (this.broadcaster && this.broadcasterAuthenticated) {
       this.sendMessage(this.broadcaster, message);
@@ -306,7 +487,97 @@ export class StreamHub {
     this.broadcastToViewers(message);
   }
 
+  private handleUtteranceEnd(event: UtteranceEndEvent): void {
+    if (!this.currentSessionId || this.accumulatedSegments.length === 0) {
+      return;
+    }
+
+    // Combine accumulated segments into a single chunk
+    const combinedText = this.accumulatedSegments.map((s) => s.text).join(" ");
+
+    // Get the dominant speaker from all segments
+    const speakerCounts = new Map<number, number>();
+    for (const seg of this.accumulatedSegments) {
+      if (seg.speaker !== null) {
+        speakerCounts.set(seg.speaker, (speakerCounts.get(seg.speaker) || 0) + 1);
+      }
+    }
+    const speaker =
+      speakerCounts.size > 0
+        ? [...speakerCounts.entries()].sort((a, b) => b[1] - a[1])[0][0]
+        : null;
+
+    // Calculate average confidence
+    const avgConfidence =
+      this.accumulatedSegments.reduce((sum, s) => sum + s.confidence, 0) /
+      this.accumulatedSegments.length;
+
+    // Calculate end time
+    const endTimeMs = event.lastWordEnd * 1000;
+
+    // Create the chunk in database
+    const chunk = inferenceQueue.createStreamChunk({
+      sessionId: this.currentSessionId,
+      chunkIndex: this.chunkIndex++,
+      speaker,
+      transcript: combinedText,
+      confidence: avgConfidence,
+      startTimeMs: this.utteranceStartTimeMs,
+      endTimeMs: endTimeMs,
+    });
+
+    console.log(
+      `[StreamHub] Chunk ${chunk.id} created: speaker=${speaker}, words=${chunk.word_count}`
+    );
+
+    // Broadcast chunk_created to viewers
+    const chunkCreatedMessage: ChunkCreatedMessage = {
+      type: "chunk_created",
+      sessionId: this.currentSessionId,
+      chunk: {
+        id: chunk.id,
+        index: chunk.chunk_index,
+        speaker: chunk.speaker,
+        transcript: chunk.transcript,
+        startTimeMs: chunk.start_time_ms,
+        endTimeMs: chunk.end_time_ms,
+      },
+    };
+
+    if (this.broadcaster && this.broadcasterAuthenticated) {
+      this.sendMessage(this.broadcaster, chunkCreatedMessage);
+    }
+    this.broadcastToViewers(chunkCreatedMessage);
+
+    // Queue analysis job if chunk has enough words
+    if (chunk.word_count >= MIN_WORDS_FOR_ANALYSIS) {
+      try {
+        const jobId = inferenceQueue.createAnalyzeChunkJob({
+          chunkId: chunk.id,
+          sessionId: this.currentSessionId,
+        });
+        console.log(`[StreamHub] Queued analysis job ${jobId} for chunk ${chunk.id}`);
+      } catch (err) {
+        console.error(`[StreamHub] Failed to create analysis job:`, err);
+      }
+    } else {
+      // Mark as skipped if too short
+      inferenceQueue.updateChunkAnalysisStatus(chunk.id, "skipped");
+    }
+
+    // Reset accumulator for next utterance
+    this.accumulatedSegments = [];
+    this.utteranceStartTimeMs = 0;
+  }
+
   private relayAudio(audioData: Buffer): void {
+    // Write to file stream
+    if (this.audioFileStream) {
+      this.audioFileStream.write(audioData);
+      this.totalAudioBytes += audioData.length;
+    }
+
+    // Relay to Deepgram
     if (this.deepgramStream) {
       this.deepgramStream.sendAudio(audioData);
     }
@@ -318,11 +589,165 @@ export class StreamHub {
       this.deepgramStream = null;
     }
 
+    // Finalize any remaining accumulated segments as a chunk
+    this.finalizeRemainingSegments();
+
+    // Finalize session
+    this.finalizeSession();
+
     this.sessionStartTime = null;
     this.broadcastToViewers({ type: "session_ended" });
     this.broadcastStatus();
 
     console.log("[StreamHub] Streaming stopped by broadcaster");
+  }
+
+  /**
+   * Finalize any remaining accumulated segments as a chunk
+   * Called when session ends before UtteranceEnd is received
+   */
+  private finalizeRemainingSegments(): void {
+    if (!this.currentSessionId || this.accumulatedSegments.length === 0) {
+      return;
+    }
+
+    console.log(
+      `[StreamHub] Finalizing ${this.accumulatedSegments.length} remaining segments`
+    );
+
+    // Combine accumulated segments into a single chunk
+    const combinedText = this.accumulatedSegments.map((s) => s.text).join(" ");
+
+    // Get the dominant speaker from all segments
+    const speakerCounts = new Map<number, number>();
+    for (const seg of this.accumulatedSegments) {
+      if (seg.speaker !== null) {
+        speakerCounts.set(seg.speaker, (speakerCounts.get(seg.speaker) || 0) + 1);
+      }
+    }
+    const speaker =
+      speakerCounts.size > 0
+        ? [...speakerCounts.entries()].sort((a, b) => b[1] - a[1])[0][0]
+        : null;
+
+    // Calculate average confidence
+    const avgConfidence =
+      this.accumulatedSegments.reduce((sum, s) => sum + s.confidence, 0) /
+      this.accumulatedSegments.length;
+
+    // Use last segment end time as chunk end
+    const lastSegment = this.accumulatedSegments[this.accumulatedSegments.length - 1];
+    const endTimeMs = (lastSegment.start + lastSegment.duration) * 1000;
+
+    try {
+      // Create the chunk in database
+      const chunk = inferenceQueue.createStreamChunk({
+        sessionId: this.currentSessionId,
+        chunkIndex: this.chunkIndex++,
+        speaker,
+        transcript: combinedText,
+        confidence: avgConfidence,
+        startTimeMs: this.utteranceStartTimeMs,
+        endTimeMs: endTimeMs,
+      });
+
+      console.log(
+        `[StreamHub] Final chunk ${chunk.id} created: speaker=${speaker}, words=${chunk.word_count}`
+      );
+
+      // Broadcast chunk_created
+      const chunkCreatedMessage: ChunkCreatedMessage = {
+        type: "chunk_created",
+        sessionId: this.currentSessionId,
+        chunk: {
+          id: chunk.id,
+          index: chunk.chunk_index,
+          speaker: chunk.speaker,
+          transcript: chunk.transcript,
+          startTimeMs: chunk.start_time_ms,
+          endTimeMs: chunk.end_time_ms,
+        },
+      };
+
+      if (this.broadcaster && this.broadcasterAuthenticated) {
+        this.sendMessage(this.broadcaster, chunkCreatedMessage);
+      }
+      this.broadcastToViewers(chunkCreatedMessage);
+
+      // Queue analysis job if chunk has enough words
+      if (chunk.word_count >= MIN_WORDS_FOR_ANALYSIS) {
+        const jobId = inferenceQueue.createAnalyzeChunkJob({
+          chunkId: chunk.id,
+          sessionId: this.currentSessionId,
+        });
+        console.log(`[StreamHub] Queued analysis job ${jobId} for final chunk ${chunk.id}`);
+      } else {
+        inferenceQueue.updateChunkAnalysisStatus(chunk.id, "skipped");
+      }
+    } catch (err) {
+      console.error("[StreamHub] Failed to create final chunk:", err);
+    }
+
+    // Clear accumulator
+    this.accumulatedSegments = [];
+    this.utteranceStartTimeMs = 0;
+  }
+
+  private finalizeSession(): void {
+    // Close audio file stream
+    if (this.audioFileStream) {
+      this.audioFileStream.end();
+      this.audioFileStream = null;
+    }
+
+    // Calculate session duration
+    const durationMs = this.sessionStartTime
+      ? Date.now() - this.sessionStartTime
+      : 0;
+
+    // Update submission with file size and combined transcript
+    if (this.currentSubmissionId && this.audioFilePath) {
+      try {
+        const stats = fs.statSync(this.audioFilePath);
+
+        // Build combined transcript from all chunks
+        let combinedTranscript: string | undefined;
+        if (this.currentSessionId) {
+          const chunks = inferenceQueue.getSessionChunks(this.currentSessionId);
+          if (chunks.length > 0) {
+            combinedTranscript = chunks.map((c) => c.transcript).join(" ");
+          }
+        }
+
+        inferenceQueue.finalizeStreamSubmission(
+          this.currentSubmissionId,
+          stats.size,
+          combinedTranscript
+        );
+
+        console.log(
+          `[StreamHub] Submission ${this.currentSubmissionId} finalized: ${stats.size} bytes`
+        );
+      } catch (err) {
+        console.error("[StreamHub] Failed to update submission:", err);
+      }
+    }
+
+    // End stream session
+    if (this.currentSessionId) {
+      inferenceQueue.endStreamSession(this.currentSessionId, durationMs);
+      console.log(
+        `[StreamHub] Session ${this.currentSessionId} ended: ${durationMs}ms`
+      );
+    }
+
+    // Reset state
+    this.currentSubmissionId = null;
+    this.currentSessionId = null;
+    this.audioFilePath = null;
+    this.totalAudioBytes = 0;
+    this.chunkIndex = 0;
+    this.accumulatedSegments = [];
   }
 
   private handleBroadcasterDisconnect(): void {
@@ -332,6 +757,12 @@ export class StreamHub {
       this.deepgramStream.close();
       this.deepgramStream = null;
     }
+
+    // Finalize any remaining accumulated segments as a chunk
+    this.finalizeRemainingSegments();
+
+    // Finalize session before clearing state
+    this.finalizeSession();
 
     this.broadcaster = null;
     this.broadcasterAuthenticated = false;
@@ -423,6 +854,40 @@ export class StreamHub {
       viewerCount: this.viewers.size,
       sessionDurationMs: this.sessionStartTime ? Date.now() - this.sessionStartTime : null,
     };
+  }
+
+  /**
+   * Broadcast chunk analysis results (called by job processor)
+   */
+  broadcastChunkAnalyzed(
+    sessionId: string,
+    chunkId: number,
+    results: {
+      topics: Array<{ topic: string; confidence: number }>;
+      intents: Array<{ intent: string; confidence: number }>;
+      summary: string;
+    }
+  ): void {
+    const message: ChunkAnalyzedMessage = {
+      type: "chunk_analyzed",
+      sessionId,
+      chunkId,
+      topics: results.topics,
+      intents: results.intents,
+      summary: results.summary,
+    };
+
+    // Broadcast to broadcaster if this is the active session
+    if (
+      this.currentSessionId === sessionId &&
+      this.broadcaster &&
+      this.broadcasterAuthenticated
+    ) {
+      this.sendMessage(this.broadcaster, message);
+    }
+
+    // Broadcast to all viewers
+    this.broadcastToViewers(message);
   }
 }
 

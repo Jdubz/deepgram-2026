@@ -17,6 +17,8 @@ export interface StreamingConfig {
   diarize?: boolean;
   interimResults?: boolean;
   endpointing?: number;
+  utteranceEndMs?: number;
+  smartFormat?: boolean;
   sampleRate?: number;
   channels?: number;
   encoding?: string;
@@ -41,8 +43,13 @@ export interface TranscriptSegment {
   duration: number;
 }
 
+export interface UtteranceEndEvent {
+  lastWordEnd: number;
+}
+
 export interface DeepgramStreamEvents {
   onTranscript: (segment: TranscriptSegment) => void;
+  onUtteranceEnd?: (event: UtteranceEndEvent) => void;
   onError: (error: Error) => void;
   onClose: () => void;
   onOpen: () => void;
@@ -55,6 +62,8 @@ const DEFAULT_CONFIG: Partial<StreamingConfig> = {
   diarize: true,
   interimResults: true,
   endpointing: 300,
+  utteranceEndMs: 1500,
+  smartFormat: true,
   sampleRate: 16000,
   channels: 1,
   encoding: "linear16",
@@ -83,6 +92,8 @@ export class DeepgramStream {
       diarize: String(this.config.diarize),
       interim_results: String(this.config.interimResults),
       endpointing: String(this.config.endpointing),
+      utterance_end_ms: String(this.config.utteranceEndMs),
+      smart_format: String(this.config.smartFormat),
       encoding: this.config.encoding!,
       sample_rate: String(this.config.sampleRate),
       channels: String(this.config.channels),
@@ -125,6 +136,16 @@ export class DeepgramStream {
   }
 
   private handleResponse(response: DeepgramResponse): void {
+    // Handle UtteranceEnd events
+    if (response.type === "UtteranceEnd") {
+      if (this.events.onUtteranceEnd) {
+        this.events.onUtteranceEnd({
+          lastWordEnd: response.last_word_end || 0,
+        });
+      }
+      return;
+    }
+
     if (response.type === "Results" && response.channel?.alternatives?.[0]) {
       const alternative = response.channel.alternatives[0];
       const transcript = alternative.transcript || "";
@@ -217,4 +238,5 @@ interface DeepgramResponse {
   speech_final?: boolean;
   start?: number;
   duration?: number;
+  last_word_end?: number;
 }
