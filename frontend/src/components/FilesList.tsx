@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import { formatDuration, formatSize } from '../utils/format'
+import { CollapsibleSection } from './CollapsibleSection'
 
 export interface AudioFile {
   id: string
@@ -54,73 +56,76 @@ export function FilesList({
   onRefresh,
   onGetInfo,
 }: FilesListProps) {
-  return (
-    <>
-      {/* Filter Section */}
-      <section style={{ marginBottom: '20px' }}>
-        <h2>Files</h2>
-        <div style={{ display: 'flex', gap: '16px', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap' }}>
-          <label>
-            Max Duration (s):
-            <input
-              type="number"
-              value={maxDuration}
-              onChange={(e) => onMaxDurationChange(e.target.value)}
-              placeholder="e.g., 300"
-              style={{ marginLeft: '8px', padding: '4px', width: '80px' }}
-            />
-          </label>
-          <label>
-            Min Confidence (%):
-            <input
-              type="number"
-              value={minConfidence}
-              onChange={(e) => onMinConfidenceChange(e.target.value)}
-              placeholder="e.g., 80"
-              min="0"
-              max="100"
-              style={{ marginLeft: '8px', padding: '4px', width: '80px' }}
-            />
-          </label>
-          <button onClick={onRefresh} style={{ padding: '4px 12px' }}>
-            Refresh
-          </button>
-        </div>
-      </section>
+  const [isExpanded, setIsExpanded] = useState(true)
 
-      {/* Files Table */}
-      <section>
-        {files.length === 0 ? (
-          <p style={{ color: '#666' }}>No files uploaded yet.</p>
-        ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: '#eee' }}>
-                <th style={{ padding: '10px', textAlign: 'left' }}>Filename</th>
-                <th style={{ padding: '10px', textAlign: 'left' }}>Duration</th>
-                <th style={{ padding: '10px', textAlign: 'left' }}>Size</th>
-                <th style={{ padding: '10px', textAlign: 'center' }}>Confidence</th>
-                <th style={{ padding: '10px', textAlign: 'left' }}>Actions</th>
+  const filterControls = (
+    <div style={{ display: 'flex', gap: '12px', alignItems: 'center', fontSize: '14px' }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+        Max Duration:
+        <input
+          type="number"
+          value={maxDuration}
+          onChange={(e) => onMaxDurationChange(e.target.value)}
+          placeholder="sec"
+          style={{ padding: '4px', width: '60px' }}
+        />
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+        Min Confidence:
+        <input
+          type="number"
+          value={minConfidence}
+          onChange={(e) => onMinConfidenceChange(e.target.value)}
+          placeholder="%"
+          min="0"
+          max="100"
+          style={{ padding: '4px', width: '50px' }}
+        />
+      </label>
+      <button onClick={onRefresh} style={{ padding: '4px 12px' }}>
+        Refresh
+      </button>
+    </div>
+  )
+
+  return (
+    <CollapsibleSection
+      title="Files"
+      count={files.length}
+      expanded={isExpanded}
+      onToggle={() => setIsExpanded(!isExpanded)}
+      headerRight={filterControls}
+    >
+      {files.length === 0 ? (
+        <p style={{ color: '#666', margin: 0 }}>No files uploaded yet.</p>
+      ) : (
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ background: '#e8e8e8' }}>
+              <th style={{ padding: '10px', textAlign: 'left' }}>Filename</th>
+              <th style={{ padding: '10px', textAlign: 'left' }}>Duration</th>
+              <th style={{ padding: '10px', textAlign: 'left' }}>Size</th>
+              <th style={{ padding: '10px', textAlign: 'center' }}>Confidence</th>
+              <th style={{ padding: '10px', textAlign: 'left' }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {files.map((file) => (
+              <tr key={file.id} style={{ borderBottom: '1px solid #e0e0e0' }}>
+                <td style={{ padding: '10px' }}>{file.filename}</td>
+                <td style={{ padding: '10px' }}>{formatDuration(file.duration)}</td>
+                <td style={{ padding: '10px' }}>{formatSize(file.size)}</td>
+                <td style={{ padding: '10px', textAlign: 'center' }}>
+                  <ConfidenceCell confidence={file.transcriptConfidence} />
+                </td>
+                <td style={{ padding: '10px' }}>
+                  <button onClick={() => onGetInfo(file.id)}>Details</button>
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {files.map((file) => (
-                <tr key={file.id} style={{ borderBottom: '1px solid #eee' }}>
-                  <td style={{ padding: '10px' }}>{file.filename}</td>
-                  <td style={{ padding: '10px' }}>{formatDuration(file.duration)}</td>
-                  <td style={{ padding: '10px' }}>{formatSize(file.size)}</td>
-                  <td style={{ padding: '10px', textAlign: 'center' }}>
-                    <ConfidenceCell confidence={file.transcriptConfidence} />
-                  </td>
-                  <td style={{ padding: '10px' }}>
-                    <button onClick={() => onGetInfo(file.id)}>Details</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
-    </>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </CollapsibleSection>
   )
 }
