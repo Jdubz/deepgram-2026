@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 const API_BASE = '/api'
 
@@ -58,6 +58,24 @@ function App() {
   const [jobs, setJobs] = useState<Job[]>([])
   const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null)
   const [queueExpanded, setQueueExpanded] = useState(false)
+  const [provider, setProvider] = useState<'local' | 'deepgram'>('local')
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) {
+      setSelectedFile(null)
+      return
+    }
+    if (!file.type.startsWith('audio/')) {
+      setMessage('Error: Please select an audio file')
+      e.target.value = ''
+      setSelectedFile(null)
+      return
+    }
+    setMessage('')
+    setSelectedFile(file)
+  }
 
   const fetchFiles = async () => {
     try {
@@ -105,6 +123,7 @@ function App() {
       const formData = new FormData()
       formData.append('file', selectedFile)
       formData.append('title', selectedFile.name)
+      formData.append('provider', provider)
 
       const res = await fetch(`${API_BASE}/files`, {
         method: 'POST',
@@ -114,9 +133,13 @@ function App() {
       const data = await res.json()
 
       if (res.ok) {
-        setMessage(`Uploaded: ${data.filename} (${data.duration.toFixed(2)}s)`)
+        setMessage(`Uploaded: ${data.filename} (${data.provider})`)
         setSelectedFile(null)
+        if (fileInputRef.current) {
+          fileInputRef.current.value = ''
+        }
         fetchFiles()
+        fetchJobs()
       } else {
         setMessage(`Error: ${data.error}`)
       }
@@ -176,12 +199,21 @@ function App() {
       {/* Upload Section */}
       <section style={{ background: '#f5f5f5', padding: '20px', borderRadius: '8px', marginBottom: '20px' }}>
         <h2>Upload Audio</h2>
-        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
           <input
+            ref={fileInputRef}
             type="file"
             accept="audio/*"
-            onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+            onChange={handleFileSelect}
           />
+          <select
+            value={provider}
+            onChange={(e) => setProvider(e.target.value as 'local' | 'deepgram')}
+            style={{ padding: '8px 12px' }}
+          >
+            <option value="local">LocalAI</option>
+            <option value="deepgram">Deepgram</option>
+          </select>
           <button
             onClick={handleUpload}
             disabled={!selectedFile || uploading}

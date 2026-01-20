@@ -41,9 +41,10 @@ services:
     volumes:
       # Mount local models folder
       - ./models:/models
-      # Persist downloaded backends (whisper, llama, etc.) across restarts
+      # Persist build cache across restarts
       - localai-cache:/build
-      - localai-backends:/backends
+      # Persist downloaded backend binaries (whisper, llama-cpp, etc.)
+      - localai-backend-data:/tmp/localai/backend_data
     deploy:
       resources:
         reservations:
@@ -63,4 +64,4 @@ volumes:
   backend-data:
   backend-uploads:
   localai-cache:
-  localai-backends:
+  localai-backend-data:
