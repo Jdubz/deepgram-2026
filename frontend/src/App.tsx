@@ -13,9 +13,13 @@ interface AudioFile {
 
 interface FileInfo {
   filename: string
-  duration: number
-  size: number
-  summary: string
+  duration?: number
+  size?: number
+  summary?: string
+  transcript?: string
+  status?: string
+  error?: string
+  message?: string
 }
 
 function App() {
@@ -75,9 +79,9 @@ function App() {
     }
   }
 
-  const handleGetInfo = async (filename: string) => {
+  const handleGetInfo = async (id: string) => {
     try {
-      const res = await fetch(`${API_BASE}/info?name=${encodeURIComponent(filename)}`)
+      const res = await fetch(`${API_BASE}/info?id=${encodeURIComponent(id)}`)
       const data = await res.json()
       setFileInfo(data)
     } catch (err) {
@@ -168,7 +172,7 @@ function App() {
                     <button onClick={() => handleDownload(file.filename)} style={{ marginRight: '8px' }}>
                       Download
                     </button>
-                    <button onClick={() => handleGetInfo(file.filename)}>
+                    <button onClick={() => handleGetInfo(file.id)}>
                       Get Info
                     </button>
                   </td>
@@ -197,15 +201,52 @@ function App() {
             padding: '24px',
             borderRadius: '8px',
             maxWidth: '600px',
-            width: '90%'
+            width: '90%',
+            maxHeight: '80vh',
+            overflow: 'auto'
           }}>
             <h3>File Info: {fileInfo.filename}</h3>
-            <p><strong>Duration:</strong> {formatDuration(fileInfo.duration)}</p>
-            <p><strong>Size:</strong> {formatSize(fileInfo.size)}</p>
-            <p><strong>AI Summary:</strong></p>
-            <p style={{ background: '#f5f5f5', padding: '12px', borderRadius: '4px' }}>
-              {fileInfo.summary}
-            </p>
+
+            {/* Show status for non-completed files */}
+            {fileInfo.status && fileInfo.status !== 'completed' && (
+              <p style={{
+                color: fileInfo.status === 'failed' ? 'red' : '#666',
+                background: fileInfo.status === 'failed' ? '#ffebee' : '#f5f5f5',
+                padding: '12px',
+                borderRadius: '4px'
+              }}>
+                <strong>Status:</strong> {fileInfo.status}
+                {fileInfo.error && <><br/><strong>Error:</strong> {fileInfo.error}</>}
+                {fileInfo.message && <><br/>{fileInfo.message}</>}
+              </p>
+            )}
+
+            {/* Show details for completed files */}
+            {fileInfo.duration !== undefined && (
+              <p><strong>Duration:</strong> {formatDuration(fileInfo.duration)}</p>
+            )}
+            {fileInfo.size !== undefined && (
+              <p><strong>Size:</strong> {formatSize(fileInfo.size)}</p>
+            )}
+
+            {fileInfo.transcript && (
+              <>
+                <p><strong>Transcript:</strong></p>
+                <p style={{ background: '#f5f5f5', padding: '12px', borderRadius: '4px', whiteSpace: 'pre-wrap' }}>
+                  {fileInfo.transcript}
+                </p>
+              </>
+            )}
+
+            {fileInfo.summary && (
+              <>
+                <p><strong>AI Summary:</strong></p>
+                <p style={{ background: '#e3f2fd', padding: '12px', borderRadius: '4px' }}>
+                  {fileInfo.summary}
+                </p>
+              </>
+            )}
+
             <button onClick={() => setFileInfo(null)} style={{ marginTop: '12px', padding: '8px 16px' }}>
               Close
             </button>
