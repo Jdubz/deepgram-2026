@@ -1,6 +1,7 @@
 import { formatDuration, formatSize } from '../utils/format'
 
 export interface FileInfo {
+  id: string
   filename: string
   duration?: number
   size?: number
@@ -63,11 +64,22 @@ export function FileInfoModal({ fileInfo, onClose }: FileInfoModalProps) {
           </p>
         )}
 
+        {/* Audio player */}
+        <div style={{ marginTop: '16px' }}>
+          <audio
+            controls
+            src={`/api/download?id=${encodeURIComponent(fileInfo.id)}`}
+            style={{ width: '100%' }}
+          >
+            Your browser does not support the audio element.
+          </audio>
+        </div>
+
         {/* Transcript section with job-specific status */}
         <div style={{ marginTop: '16px' }}>
           <p>
             <strong>Transcript</strong>
-            {fileInfo.transcriptStatus === 'completed' && fileInfo.transcriptProvider && (
+            {fileInfo.transcriptProvider && (
               <span style={{ color: '#666', fontSize: '12px', marginLeft: '8px' }}>
                 ({fileInfo.transcriptProvider}
                 {fileInfo.transcriptModel ? ` / ${fileInfo.transcriptModel}` : ''})
@@ -116,7 +128,7 @@ export function FileInfoModal({ fileInfo, onClose }: FileInfoModalProps) {
         <div style={{ marginTop: '16px' }}>
           <p>
             <strong>AI Summary</strong>
-            {fileInfo.summaryStatus === 'completed' && fileInfo.summaryProvider && (
+            {fileInfo.summaryProvider && (
               <span style={{ color: '#666', fontSize: '12px', marginLeft: '8px' }}>
                 ({fileInfo.summaryProvider}
                 {fileInfo.summaryModel ? ` / ${fileInfo.summaryModel}` : ''})

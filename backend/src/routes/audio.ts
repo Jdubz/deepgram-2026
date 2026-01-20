@@ -359,6 +359,7 @@ router.get("/info", async (req: Request, res: Response): Promise<void> => {
 
     // Always return file info with job-specific statuses
     res.json({
+      id: submission.id,
       filename: submission.original_filename || submission.filename,
       duration: submission.duration_seconds || 0,
       size: submission.file_size || 0,
