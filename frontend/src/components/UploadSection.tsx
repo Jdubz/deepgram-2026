@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 
 interface UploadSectionProps {
   provider: 'local' | 'deepgram'
@@ -16,20 +16,32 @@ export function UploadSection({
   message,
 }: UploadSectionProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
 
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file) return
+    if (!file) {
+      setSelectedFile(null)
+      return
+    }
 
     if (!file.type.startsWith('audio/')) {
       alert('Please select an audio file')
       e.target.value = ''
+      setSelectedFile(null)
       return
     }
 
-    await onUpload(file)
+    setSelectedFile(file)
+  }
 
-    // Reset input after upload
+  const handleSubmit = async () => {
+    if (!selectedFile) return
+
+    await onUpload(selectedFile)
+
+    // Reset after upload
+    setSelectedFile(null)
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
@@ -55,8 +67,23 @@ export function UploadSection({
           <option value="local">LocalAI</option>
           <option value="deepgram">Deepgram</option>
         </select>
-        {uploading && <span style={{ color: '#666' }}>Uploading...</span>}
+        <button
+          onClick={handleSubmit}
+          disabled={!selectedFile || uploading}
+          style={{
+            padding: '8px 16px',
+            cursor: selectedFile && !uploading ? 'pointer' : 'not-allowed',
+            opacity: selectedFile && !uploading ? 1 : 0.6,
+          }}
+        >
+          {uploading ? 'Uploading...' : 'Upload'}
+        </button>
       </div>
+      {selectedFile && !uploading && (
+        <p style={{ marginTop: '10px', color: '#666' }}>
+          Selected: {selectedFile.name} ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)
+        </p>
+      )}
       {message && (
         <p style={{ marginTop: '10px', color: message.startsWith('Error') ? 'red' : 'green' }}>
           {message}

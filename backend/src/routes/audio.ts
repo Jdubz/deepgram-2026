@@ -321,27 +321,40 @@ router.get("/info", async (req: Request, res: Response): Promise<void> => {
       : null;
 
     // Determine transcript status
+    // Check submission-level failure first (e.g., failed before job was created)
     let transcriptStatus: "pending" | "completed" | "failed" = "pending";
     let transcriptError: string | null = null;
-    if (transcriptJob) {
+
+    if (submission.status === "failed" && !transcriptJob) {
+      // Submission failed before transcription job was created or started
+      transcriptStatus = "failed";
+      transcriptError = submission.error_message || "Unknown error";
+    } else if (transcriptJob) {
       if (transcriptJob.status === "completed") {
         transcriptStatus = "completed";
       } else if (transcriptJob.status === "failed") {
         transcriptStatus = "failed";
         transcriptError = transcriptJob.error_message || "Unknown error";
       }
+      // "pending" and "processing" job statuses both show as "pending" in UI
     }
 
     // Determine summary status
     let summaryStatus: "pending" | "completed" | "failed" = "pending";
     let summaryError: string | null = null;
-    if (summaryJob) {
+
+    if (submission.status === "failed" && transcriptStatus === "failed") {
+      // If transcription failed, summary will never happen
+      summaryStatus = "failed";
+      summaryError = "Transcription failed";
+    } else if (summaryJob) {
       if (summaryJob.status === "completed") {
         summaryStatus = "completed";
       } else if (summaryJob.status === "failed") {
         summaryStatus = "failed";
         summaryError = summaryJob.error_message || "Unknown error";
       }
+      // "pending" and "processing" job statuses both show as "pending" in UI
     }
 
     // Always return file info with job-specific statuses
