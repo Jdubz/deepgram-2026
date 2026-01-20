@@ -19,6 +19,7 @@ import { Provider } from "../types/index.js";
 import { inferenceQueue, Job, SubmissionStatus } from "./inference-queue.js";
 import { getProvider } from "./provider-factory.js";
 import { LocalAIService } from "./localai.js";
+import { jobEventHub } from "./job-event-hub.js";
 
 export interface ProcessorStatus {
   isRunning: boolean;
@@ -143,6 +144,9 @@ class JobProcessorService {
 
     console.log(`[JobProcessor] Claimed job ${job.id} (${job.job_type}, provider: ${job.provider})`);
 
+    // Emit job claimed event
+    jobEventHub.emitJobClaimed(job.id, job.job_type, job.provider);
+
     // Set processing state
     this.isProcessing = true;
     this.currentJobId = job.id;
@@ -169,6 +173,10 @@ class JobProcessorService {
 
       // Mark job as failed
       inferenceQueue.failJob(job.id, errorMessage);
+
+      // Emit job failed event
+      jobEventHub.emitJobFailed(job.id, errorMessage);
+      jobEventHub.emitQueueStatus();
 
       // Update submission status if linked
       if (job.audio_file_id) {
@@ -233,6 +241,10 @@ class JobProcessorService {
       result.rawResponse
     );
 
+    // Emit job completed event
+    jobEventHub.emitJobCompleted(job.id, result.processingTimeMs, result.confidence ?? null);
+    jobEventHub.emitQueueStatus();
+
     // Update submission with transcript
     if (job.audio_file_id) {
       inferenceQueue.updateSubmissionTranscript(
@@ -248,11 +260,18 @@ class JobProcessorService {
         console.log(`[JobProcessor] Auto-creating summarize job for submission ${job.audio_file_id}`);
 
         // Create summarize job with the same provider
-        inferenceQueue.createSummarizeJob({
+        const summarizeJobId = inferenceQueue.createSummarizeJob({
           text: result.text,
           audioFileId: job.audio_file_id,
           provider: job.provider as Provider,
         });
+
+        // Emit job created event for the summarize job
+        const summarizeJob = inferenceQueue.getJob(summarizeJobId);
+        if (summarizeJob) {
+          jobEventHub.emitJobCreated(summarizeJob);
+          jobEventHub.emitQueueStatus();
+        }
       } else if (!metadata.autoSummarize) {
         // No auto-summarize, mark submission as completed
         inferenceQueue.updateSubmissionStatus(job.audio_file_id, "completed");
@@ -297,6 +316,8 @@ class JobProcessorService {
         (tokenCount, _partialText) => {
           // Update heartbeat in database on each token
           inferenceQueue.updateJobHeartbeat(job.id, tokenCount);
+          // Emit progress event (throttled by frontend)
+          jobEventHub.emitJobProgress(job.id, tokenCount);
         }
       );
     } else {
@@ -317,6 +338,10 @@ class JobProcessorService {
       result.confidence,
       result.rawResponse
     );
+
+    // Emit job completed event
+    jobEventHub.emitJobCompleted(job.id, result.processingTimeMs, result.confidence ?? null);
+    jobEventHub.emitQueueStatus();
 
     // Update submission with summary and mark as completed
     if (job.audio_file_id) {

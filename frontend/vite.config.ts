@@ -13,6 +13,10 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
+      '/stream': {
+        target: 'ws://localhost:3001',
+        ws: true,
+      },
     },
   },
 })

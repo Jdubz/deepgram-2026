@@ -15,6 +15,7 @@ import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
 import { audioService } from "../services/audio.js";
 import { inferenceQueue } from "../services/inference-queue.js";
+import { jobEventHub } from "../services/job-event-hub.js";
 import { getDefaultProvider } from "../services/provider-factory.js";
 import { Provider, ListFilesQuery } from "../types/index.js";
 import { MAX_FILE_SIZE_BYTES, API_CONFIG } from "../constants.js";
@@ -147,6 +148,13 @@ router.post(
         autoProcess: true,
         provider,
       });
+
+      // Emit job created event for the auto-created transcribe job
+      const jobs = inferenceQueue.getJobsForSubmission(id);
+      if (jobs.length > 0) {
+        jobEventHub.emitJobCreated(jobs[0]);
+        jobEventHub.emitQueueStatus();
+      }
 
       res.status(201).json({
         id: submission.id,

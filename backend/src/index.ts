@@ -8,6 +8,7 @@
  * - Listing and filtering stored files
  * - Downloading audio content
  * - Getting AI-generated summaries
+ * - Real-time audio streaming with transcription
  */
 
 // Load environment variables from .env file (must be first import)
@@ -15,11 +16,15 @@ import "dotenv/config";
 
 import express from "express";
 import cors from "cors";
+import { WebSocketServer, WebSocket } from "ws";
+import { IncomingMessage } from "http";
 import audioRoutes from "./routes/audio.js";
 import { jobProcessor } from "./services/job-processor.js";
 import { inferenceQueue } from "./services/inference-queue.js";
 import { localAI } from "./services/localai.js";
 import { deepgram } from "./services/deepgram.js";
+import { streamHub } from "./services/stream-hub.js";
+import { jobEventHub } from "./services/job-event-hub.js";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -32,6 +37,7 @@ app.use(express.json());
 app.get("/health", async (_req, res) => {
   const localAIHealthy = await localAI.healthCheck();
   const processorStatus = jobProcessor.getStatus();
+  const streamStatus = streamHub.getStatus();
 
   res.json({
     status: "ok",
@@ -46,6 +52,10 @@ app.get("/health", async (_req, res) => {
         config: deepgram.getConfig(),
       },
       jobProcessor: processorStatus,
+      streaming: {
+        configured: !!process.env.STREAM_PASSWORD,
+        ...streamStatus,
+      },
     },
   });
 });
@@ -98,8 +108,41 @@ const server = app.listen(Number(PORT), "0.0.0.0", () => {
     GET    /queue/status       Queue and processor status
     GET    /submissions/:id    Get submission with jobs
 
+  WebSocket Endpoints:
+    WS     /stream/broadcast   Broadcaster (auth required)
+    WS     /stream/watch       Viewer (public)
+    WS     /jobs/events        Job queue events (public)
+
 ====================================
   `);
+});
+
+// WebSocket server for real-time streaming
+const wss = new WebSocketServer({ noServer: true });
+
+// Handle WebSocket upgrade requests
+server.on("upgrade", (request: IncomingMessage, socket, head) => {
+  const pathname = request.url?.split("?")[0];
+  const clientIp = (request.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim()
+    || request.socket.remoteAddress
+    || "unknown";
+
+  if (pathname === "/stream/broadcast") {
+    wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
+      streamHub.handleBroadcaster(ws, clientIp);
+    });
+  } else if (pathname === "/stream/watch") {
+    wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
+      streamHub.handleViewer(ws);
+    });
+  } else if (pathname === "/jobs/events") {
+    wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
+      jobEventHub.handleClient(ws);
+    });
+  } else {
+    // Unknown WebSocket path - reject
+    socket.destroy();
+  }
 });
 
 // Graceful shutdown

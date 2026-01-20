@@ -26,7 +26,8 @@ interface JobQueueProps {
   queueStatus: QueueStatus | null
   expanded: boolean
   onToggleExpand: () => void
-  onRefresh: () => void
+  onRefresh?: () => void
+  isConnected?: boolean
 }
 
 export function JobQueue({
@@ -35,6 +36,7 @@ export function JobQueue({
   expanded,
   onToggleExpand,
   onRefresh,
+  isConnected = true,
 }: JobQueueProps) {
   return (
     <section style={{ marginTop: '20px' }}>
@@ -50,7 +52,19 @@ export function JobQueue({
           alignItems: 'center',
         }}
       >
-        <h2 style={{ margin: 0 }}>Job Queue {expanded ? '▼' : '▶'}</h2>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <h2 style={{ margin: 0 }}>Job Queue {expanded ? '▼' : '▶'}</h2>
+          <span
+            title={isConnected ? 'Live updates connected' : 'Live updates disconnected'}
+            style={{
+              width: '8px',
+              height: '8px',
+              borderRadius: '50%',
+              background: isConnected ? '#4caf50' : '#f44336',
+              display: 'inline-block',
+            }}
+          />
+        </div>
         {queueStatus && (
           <div style={{ display: 'flex', gap: '16px', fontSize: '14px' }}>
             <span style={{ color: '#ff9800' }}>Pending: {queueStatus.pending}</span>
@@ -63,11 +77,13 @@ export function JobQueue({
 
       {expanded && (
         <div style={{ marginTop: '10px' }}>
-          <div style={{ marginBottom: '10px', display: 'flex', justifyContent: 'flex-end' }}>
-            <button onClick={onRefresh} style={{ padding: '4px 12px' }}>
-              Refresh
-            </button>
-          </div>
+          {onRefresh && (
+            <div style={{ marginBottom: '10px', display: 'flex', justifyContent: 'flex-end' }}>
+              <button onClick={onRefresh} style={{ padding: '4px 12px' }}>
+                Refresh
+              </button>
+            </div>
+          )}
           {jobs.length === 0 ? (
             <p style={{ color: '#666' }}>No jobs in queue.</p>
           ) : (
