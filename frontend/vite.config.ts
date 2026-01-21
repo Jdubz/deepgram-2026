@@ -1,6 +1,15 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
+// Suppress noisy ECONNRESET errors from WebSocket proxy
+// These occur normally when connections close (client disconnect, backend restart, etc.)
+const silenceProxyErrors = {
+  error: (err: Error) => {
+    if (err.message.includes('ECONNRESET')) return
+    console.error('[proxy error]', err)
+  },
+}
+
 export default defineConfig({
   plugins: [react()],
   server: {
@@ -16,10 +25,16 @@ export default defineConfig({
       '/stream': {
         target: 'ws://localhost:3001',
         ws: true,
+        configure: (proxy) => {
+          proxy.on('error', silenceProxyErrors.error)
+        },
       },
       '/jobs': {
         target: 'ws://localhost:3001',
         ws: true,
+        configure: (proxy) => {
+          proxy.on('error', silenceProxyErrors.error)
+        },
       },
     },
   },
