@@ -469,23 +469,39 @@ class InferenceQueueService {
         };
       }
 
-      const topics: Array<{ topic: string; confidence: number }> = [];
+      // Collect and transform topics (Deepgram uses confidence_score, we use confidence)
+      const topicsMap = new Map<string, number>();
       if (results.topics?.segments) {
         for (const segment of results.topics.segments) {
-          if (segment.topics) {
-            topics.push(...segment.topics);
+          for (const t of segment.topics || []) {
+            if (t.topic) {
+              const confidence = t.confidence_score ?? t.confidence ?? 0;
+              const existing = topicsMap.get(t.topic) || 0;
+              topicsMap.set(t.topic, Math.max(existing, confidence));
+            }
           }
         }
       }
+      const topics = [...topicsMap.entries()]
+        .map(([topic, confidence]) => ({ topic, confidence }))
+        .sort((a, b) => b.confidence - a.confidence);
 
-      const intents: Array<{ intent: string; confidence: number }> = [];
+      // Collect and transform intents (Deepgram uses confidence_score, we use confidence)
+      const intentsMap = new Map<string, number>();
       if (results.intents?.segments) {
         for (const segment of results.intents.segments) {
-          if (segment.intents) {
-            intents.push(...segment.intents);
+          for (const i of segment.intents || []) {
+            if (i.intent) {
+              const confidence = i.confidence_score ?? i.confidence ?? 0;
+              const existing = intentsMap.get(i.intent) || 0;
+              intentsMap.set(i.intent, Math.max(existing, confidence));
+            }
           }
         }
       }
+      const intents = [...intentsMap.entries()]
+        .map(([intent, confidence]) => ({ intent, confidence }))
+        .sort((a, b) => b.confidence - a.confidence);
 
       let sentiment: ChunkSentiment | null = null;
       if (results.sentiments?.average) {

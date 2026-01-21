@@ -354,63 +354,71 @@ export function FileInfoModal({ fileInfo, onClose, onDownload }: FileInfoModalPr
             )}
 
             {/* Topics */}
-            {fileInfo.topics && fileInfo.topics.length > 0 && (
+            {fileInfo.topics && (
               <div style={{ marginTop: '8px' }}>
                 <span style={{ fontSize: '13px', color: '#666' }}>Topics: </span>
-                <div style={{ display: 'inline-flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' }}>
-                  {fileInfo.topics.slice(0, 5).map((topic, index) => (
-                    <span
-                      key={`${index}-${topic.topic}`}
-                      style={{
-                        display: 'inline-block',
-                        padding: '3px 8px',
-                        background: ['#e3f2fd', '#f3e5f5', '#e8f5e9', '#fff3e0', '#fce4ec'][index % 5],
-                        color: ['#1565c0', '#7b1fa2', '#2e7d32', '#ef6c00', '#c2185b'][index % 5],
-                        borderRadius: '12px',
-                        fontSize: '12px',
-                        fontWeight: 500,
-                      }}
-                      title={`Confidence: ${Math.round(topic.confidence * 100)}%`}
-                    >
-                      {topic.topic}
-                    </span>
-                  ))}
-                  {fileInfo.topics.length > 5 && (
-                    <span style={{ fontSize: '12px', color: '#999' }}>
-                      +{fileInfo.topics.length - 5} more
-                    </span>
-                  )}
-                </div>
+                {fileInfo.topics.length > 0 ? (
+                  <div style={{ display: 'inline-flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' }}>
+                    {fileInfo.topics.slice(0, 5).map((topic, index) => (
+                      <span
+                        key={`${index}-${topic.topic}`}
+                        style={{
+                          display: 'inline-block',
+                          padding: '3px 8px',
+                          background: ['#e3f2fd', '#f3e5f5', '#e8f5e9', '#fff3e0', '#fce4ec'][index % 5],
+                          color: ['#1565c0', '#7b1fa2', '#2e7d32', '#ef6c00', '#c2185b'][index % 5],
+                          borderRadius: '12px',
+                          fontSize: '12px',
+                          fontWeight: 500,
+                        }}
+                        title={`Confidence: ${Math.round(topic.confidence * 100)}%`}
+                      >
+                        {topic.topic}
+                      </span>
+                    ))}
+                    {fileInfo.topics.length > 5 && (
+                      <span style={{ fontSize: '12px', color: '#999' }}>
+                        +{fileInfo.topics.length - 5} more
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <span style={{ fontSize: '13px', color: '#999', fontStyle: 'italic' }}>None detected</span>
+                )}
               </div>
             )}
 
             {/* Intents */}
-            {fileInfo.intents && fileInfo.intents.length > 0 && (
+            {fileInfo.intents && (
               <div style={{ marginTop: '8px' }}>
                 <span style={{ fontSize: '13px', color: '#666' }}>Intents: </span>
-                <div style={{ display: 'inline-flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' }}>
-                  {fileInfo.intents.slice(0, 4).map((intent, index) => (
-                    <span
-                      key={`${index}-${intent.intent}`}
-                      style={{
-                        display: 'inline-block',
-                        padding: '3px 8px',
-                        background: '#f5f5f5',
-                        color: '#666',
-                        borderRadius: '4px',
-                        fontSize: '12px',
-                      }}
-                      title={`Confidence: ${Math.round(intent.confidence * 100)}%`}
-                    >
-                      {intent.intent}
-                    </span>
-                  ))}
-                  {fileInfo.intents.length > 4 && (
-                    <span style={{ fontSize: '12px', color: '#999' }}>
-                      +{fileInfo.intents.length - 4} more
-                    </span>
-                  )}
-                </div>
+                {fileInfo.intents.length > 0 ? (
+                  <div style={{ display: 'inline-flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' }}>
+                    {fileInfo.intents.slice(0, 4).map((intent, index) => (
+                      <span
+                        key={`${index}-${intent.intent}`}
+                        style={{
+                          display: 'inline-block',
+                          padding: '3px 8px',
+                          background: '#f5f5f5',
+                          color: '#666',
+                          borderRadius: '4px',
+                          fontSize: '12px',
+                        }}
+                        title={`Confidence: ${Math.round(intent.confidence * 100)}%`}
+                      >
+                        {intent.intent}
+                      </span>
+                    ))}
+                    {fileInfo.intents.length > 4 && (
+                      <span style={{ fontSize: '12px', color: '#999' }}>
+                        +{fileInfo.intents.length - 4} more
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <span style={{ fontSize: '13px', color: '#999', fontStyle: 'italic' }}>None detected</span>
+                )}
               </div>
             )}
           </div>

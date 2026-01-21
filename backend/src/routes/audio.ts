@@ -520,8 +520,9 @@ router.get("/info", async (req: Request, res: Response): Promise<void> => {
       summaryModel: summarizeJob?.model_used || null,
       summaryConfidence: summarizeJob?.confidence || null,
       // Text intelligence analysis (from summarize job's raw_response)
-      topics: analysis.topics.length > 0 ? analysis.topics : null,
-      intents: analysis.intents.length > 0 ? analysis.intents : null,
+      // Return empty arrays (not null) for Deepgram jobs so frontend can show "None detected"
+      topics: summarizeJob?.provider === "deepgram" ? analysis.topics : (analysis.topics.length > 0 ? analysis.topics : null),
+      intents: summarizeJob?.provider === "deepgram" ? analysis.intents : (analysis.intents.length > 0 ? analysis.intents : null),
       sentiment: analysis.sentiment,
       // Stream session data (if this submission was from a stream)
       streamSession: streamSessionData,
