@@ -37,33 +37,3 @@ export function getDefaultProvider(): Provider {
   }
   return Provider.LOCAL;
 }
-
-/**
- * Check if a provider is available and configured
- */
-export async function isProviderAvailable(name: Provider): Promise<boolean> {
-  try {
-    const provider = getProvider(name);
-    return await provider.healthCheck();
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Get all registered providers
- */
-export function getAllProviders(): Record<Provider, InferenceProvider> {
-  return { ...providers };
-}
-
-/**
- * Get provider health status for all providers
- */
-export async function getProvidersHealth(): Promise<Record<Provider, boolean>> {
-  const results: Record<string, boolean> = {};
-  for (const [name, provider] of Object.entries(providers)) {
-    results[name] = await provider.healthCheck();
-  }
-  return results as Record<Provider, boolean>;
-}

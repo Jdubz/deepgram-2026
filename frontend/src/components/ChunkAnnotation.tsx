@@ -36,7 +36,6 @@ export interface ChunkAnnotationData {
 
 interface ChunkAnnotationProps {
   annotation: ChunkAnnotationData | null
-  isLoading?: boolean
 }
 
 // Topic tag colors (cycle through these)
@@ -76,22 +75,7 @@ function getIntentIcon(intent: string): string {
   return intent.charAt(0).toUpperCase()
 }
 
-export function ChunkAnnotation({ annotation, isLoading }: ChunkAnnotationProps) {
-  if (isLoading) {
-    return (
-      <div
-        style={{
-          padding: '8px',
-          color: '#999',
-          fontSize: '12px',
-          fontStyle: 'italic',
-        }}
-      >
-        Analyzing...
-      </div>
-    )
-  }
-
+export function ChunkAnnotation({ annotation }: ChunkAnnotationProps) {
   if (!annotation) {
     return null
   }

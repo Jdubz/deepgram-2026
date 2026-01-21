@@ -44,32 +44,3 @@ export function errorHandler(
     }),
   });
 }
-
-/**
- * Async route wrapper to catch errors in async handlers.
- * Wraps an async function and forwards any errors to the error handler.
- *
- * Usage:
- *   router.get('/path', asyncHandler(async (req, res) => { ... }))
- */
-export function asyncHandler<T>(
-  fn: (req: Request, res: Response, next: NextFunction) => Promise<T>
-) {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    Promise.resolve(fn(req, res, next)).catch(next);
-  };
-}
-
-/**
- * Create an API error with a specific status code.
- */
-export function createApiError(
-  message: string,
-  statusCode: number,
-  code?: string
-): ApiError {
-  const error: ApiError = new Error(message);
-  error.statusCode = statusCode;
-  error.code = code;
-  return error;
-}

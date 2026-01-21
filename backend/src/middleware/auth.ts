@@ -29,19 +29,3 @@ export function auth(
   };
   next();
 }
-
-/**
- * Optional auth - same as auth but doesn't require authentication.
- * Useful for endpoints that work with or without auth.
- */
-export function optionalAuth(
-  req: AuthenticatedRequest,
-  _res: Response,
-  next: NextFunction
-): void {
-  // Same as auth for now since auth is a noop
-  req.user = {
-    id: "anonymous",
-  };
-  next();
-}
