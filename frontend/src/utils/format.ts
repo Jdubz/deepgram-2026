@@ -8,12 +8,21 @@ export function formatSize(bytes: number): string {
 }
 
 /**
- * Format duration in human-readable form
+ * Format duration in human-readable form (e.g., "1m 30s")
  */
 export function formatDuration(seconds: number): string {
   const mins = Math.floor(seconds / 60)
   const secs = Math.floor(seconds % 60)
   return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
+}
+
+/**
+ * Format duration as clock time (e.g., "01:30")
+ */
+export function formatDurationClock(seconds: number): string {
+  const mins = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
 }
 
 /**

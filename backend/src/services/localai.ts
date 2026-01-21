@@ -139,7 +139,7 @@ class LocalAIService implements InferenceProvider {
 
       return {
         text: (rawResponse as { text?: string }).text || "",
-        confidence: 0.85, // LocalAI doesn't provide confidence, use reasonable default
+        confidence: undefined, // LocalAI doesn't provide confidence
         model: this.config.whisperModel,
         processingTimeMs: Date.now() - startTime,
         rawResponse,
@@ -258,7 +258,7 @@ class LocalAIService implements InferenceProvider {
       // Successfully parsed structured response
       return {
         text: analysis.summary,
-        confidence: 0.85,
+        confidence: undefined, // LocalAI doesn't provide confidence
         model: this.config.llmModel,
         tokensUsed,
         processingTimeMs: Date.now() - startTime,
@@ -280,7 +280,7 @@ class LocalAIService implements InferenceProvider {
 
     return {
       text: fallbackResult.content.trim(),
-      confidence: 0.70, // Lower confidence for fallback
+      confidence: undefined, // LocalAI doesn't provide confidence
       model: this.config.llmModel,
       tokensUsed: tokensUsed + fallbackResult.tokensUsed,
       processingTimeMs: Date.now() - startTime,
@@ -305,7 +305,8 @@ class LocalAIService implements InferenceProvider {
       } finally {
         clearTimeout(timeoutId);
       }
-    } catch {
+    } catch (err) {
+      console.warn("[LocalAI] Health check failed:", err);
       return false;
     }
   }
@@ -338,7 +339,8 @@ class LocalAIService implements InferenceProvider {
       } finally {
         clearTimeout(timeoutId);
       }
-    } catch {
+    } catch (err) {
+      console.warn(`[LocalAI] Failed to check if model '${modelName}' is loaded:`, err);
       return false;
     }
   }
@@ -458,8 +460,9 @@ class LocalAIService implements InferenceProvider {
                   onHeartbeat(tokenCount, fullText);
                 }
               }
-            } catch {
-              // Skip malformed JSON chunks
+            } catch (parseErr) {
+              // Log malformed JSON chunks for debugging (at debug level to avoid noise)
+              console.debug("[LocalAI] Skipping malformed streaming chunk:", data.slice(0, 100), parseErr);
             }
           }
         }
@@ -479,7 +482,7 @@ class LocalAIService implements InferenceProvider {
       if (analysis) {
         return {
           text: analysis.summary,
-          confidence: 0.85,
+          confidence: undefined, // LocalAI doesn't provide confidence
           model: this.config.llmModel,
           tokensUsed: tokenCount,
           processingTimeMs: Date.now() - startTime,
@@ -494,7 +497,7 @@ class LocalAIService implements InferenceProvider {
       console.warn("[LocalAI] Streaming: structured analysis failed, using raw text");
       return {
         text: fullText.slice(0, 500), // Truncate to reasonable summary length
-        confidence: 0.60,
+        confidence: undefined, // LocalAI doesn't provide confidence
         model: this.config.llmModel,
         tokensUsed: tokenCount,
         processingTimeMs: Date.now() - startTime,

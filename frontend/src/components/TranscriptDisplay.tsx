@@ -1,4 +1,5 @@
 import { useRef, useEffect } from 'react'
+import { getSpeakerColor, getSpeakerLabel } from '../utils/speaker'
 
 export interface TranscriptEntry {
   id: string
@@ -7,27 +8,6 @@ export interface TranscriptEntry {
   confidence: number
   isFinal: boolean
   timestamp: number
-}
-
-// Speaker colors for visual distinction
-const SPEAKER_COLORS = [
-  { bg: '#e3f2fd', border: '#1976d2', text: '#0d47a1' }, // Blue - Speaker 0
-  { bg: '#f3e5f5', border: '#7b1fa2', text: '#4a148c' }, // Purple - Speaker 1
-  { bg: '#e8f5e9', border: '#388e3c', text: '#1b5e20' }, // Green - Speaker 2
-  { bg: '#fff3e0', border: '#f57c00', text: '#e65100' }, // Orange - Speaker 3
-  { bg: '#fce4ec', border: '#c2185b', text: '#880e4f' }, // Pink - Speaker 4
-]
-
-function getSpeakerColor(speaker: number | null) {
-  if (speaker === null) {
-    return { bg: '#f5f5f5', border: '#9e9e9e', text: '#616161' }
-  }
-  return SPEAKER_COLORS[speaker % SPEAKER_COLORS.length]
-}
-
-function getSpeakerLabel(speaker: number | null): string {
-  if (speaker === null) return 'Unknown'
-  return `Speaker ${speaker + 1}`
 }
 
 interface TranscriptDisplayProps {

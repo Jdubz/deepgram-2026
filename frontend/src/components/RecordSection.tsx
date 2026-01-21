@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import { useProvider } from '../contexts'
+import { formatDurationClock } from '../utils/format'
 
 interface RecordSectionProps {
   onUploadSuccess: () => void
@@ -21,12 +22,6 @@ export function RecordSection({
   const chunksRef = useRef<Blob[]>([])
   const timerRef = useRef<number | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
-
-  const formatDuration = (seconds: number) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
-  }
 
   const startRecording = async () => {
     try {
@@ -192,7 +187,7 @@ export function RecordSection({
                   animation: 'pulse 1s infinite',
                 }}
               />
-              {formatDuration(duration)}
+              {formatDurationClock(duration)}
             </span>
           </>
         )}
@@ -242,7 +237,7 @@ export function RecordSection({
             </button>
 
             <span style={{ color: '#666', fontFamily: 'monospace' }}>
-              Duration: {formatDuration(duration)}
+              Duration: {formatDurationClock(duration)}
             </span>
           </div>
         </div>

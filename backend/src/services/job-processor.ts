@@ -363,13 +363,24 @@ class JobProcessorService {
     );
 
     // Mark job as completed with raw response
+    // Include parsed analysis data (topics, intents, sentiment) so it can be retrieved later
+    // This is especially important for LocalAI which returns these separately from rawResponse
+    const rawResponseWithAnalysis = {
+      ...(typeof result.rawResponse === 'object' && result.rawResponse !== null
+        ? result.rawResponse
+        : { rawResponse: result.rawResponse }),
+      topics: result.topics || [],
+      intents: result.intents || [],
+      sentiment: result.sentiment || null,
+    };
+
     inferenceQueue.completeJob(
       job.id,
       result.text,
       result.model,
       result.processingTimeMs,
       result.confidence,
-      result.rawResponse
+      rawResponseWithAnalysis
     );
 
     // Emit job completed event

@@ -1,27 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { ChunkAnnotation, ChunkAnnotationData, ChunkAnnotationSkeleton, ChunkSentiment } from './ChunkAnnotation'
-
-// Speaker colors for visual distinction
-const SPEAKER_COLORS = [
-  { bg: '#e3f2fd', border: '#1976d2', text: '#0d47a1' }, // Blue - Speaker 0
-  { bg: '#f3e5f5', border: '#7b1fa2', text: '#4a148c' }, // Purple - Speaker 1
-  { bg: '#e8f5e9', border: '#388e3c', text: '#1b5e20' }, // Green - Speaker 2
-  { bg: '#fff3e0', border: '#f57c00', text: '#e65100' }, // Orange - Speaker 3
-  { bg: '#fce4ec', border: '#c2185b', text: '#880e4f' }, // Pink - Speaker 4
-]
-
-function getSpeakerColor(speaker: number | null) {
-  if (speaker === null) {
-    return { bg: '#f5f5f5', border: '#9e9e9e', text: '#616161' }
-  }
-  return SPEAKER_COLORS[speaker % SPEAKER_COLORS.length]
-}
-
-function getSpeakerLabel(speaker: number | null): string {
-  if (speaker === null) return 'Unknown'
-  return `Speaker ${speaker + 1}`
-}
+import { getSpeakerColor, getSpeakerLabel } from '../utils/speaker'
 
 interface TranscriptEntry {
   id: string
@@ -72,9 +52,10 @@ interface ServerMessage {
 
 interface StreamViewerProps {
   isActive?: boolean
+  onSessionCreated?: () => void
 }
 
-export function StreamViewer({ isActive = true }: StreamViewerProps) {
+export function StreamViewer({ isActive = true, onSessionCreated }: StreamViewerProps) {
   const [isLive, setIsLive] = useState(false)
   const [viewerCount, setViewerCount] = useState(0)
   const [error, setError] = useState<string | null>(null)
@@ -172,7 +153,27 @@ export function StreamViewer({ isActive = true }: StreamViewerProps) {
             annotation: null,
             isAnalyzing: true,
           }
-          setChunks((prev) => [...prev, newChunk])
+          setChunks((prev) => {
+            // Avoid duplicates (e.g., from replay + live)
+            if (prev.some((c) => c.id === newChunk.id)) return prev
+            return [...prev, newChunk]
+          })
+
+          // Also create a transcript entry so it displays in the main view
+          // This handles both live chunks and replayed chunks from database
+          const entry: TranscriptEntry = {
+            id: `chunk-${message.chunk.id}`,
+            speaker: message.chunk.speaker,
+            text: message.chunk.transcript,
+            confidence: 1,
+            isFinal: true,
+            timestamp: message.chunk.startTimeMs,
+          }
+          setEntries((prev) => {
+            // Avoid duplicates
+            if (prev.some((e) => e.id === entry.id)) return prev
+            return [...prev, entry]
+          })
         }
         break
 
@@ -212,6 +213,8 @@ export function StreamViewer({ isActive = true }: StreamViewerProps) {
         setIsLive(true)
         setEntries([])
         setChunks([])
+        // Notify parent that a new file was created (for files list refresh)
+        onSessionCreated?.()
         break
 
       case 'session_ended':
@@ -226,7 +229,7 @@ export function StreamViewer({ isActive = true }: StreamViewerProps) {
         // Log unknown message types for debugging
         console.debug('[StreamViewer] Unhandled message type:', message.type)
     }
-  }, [])
+  }, [onSessionCreated])
 
   const handleError = useCallback(() => {
     setError('Connection error')

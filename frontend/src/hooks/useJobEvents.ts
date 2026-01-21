@@ -1,62 +1,7 @@
 import { useRef, useCallback } from 'react'
 import { useWebSocket, type ConnectionState } from './useWebSocket'
 import type { Job, QueueStatus } from '../components'
-
-// Event types from the server
-interface JobCreatedEvent {
-  type: 'job_created'
-  job: Job
-}
-
-interface JobClaimedEvent {
-  type: 'job_claimed'
-  jobId: number
-  jobType: string
-  provider: string
-  startedAt: string
-}
-
-interface JobProgressEvent {
-  type: 'job_progress'
-  jobId: number
-  tokenCount: number
-  elapsedMs: number
-}
-
-interface JobCompletedEvent {
-  type: 'job_completed'
-  jobId: number
-  processingTimeMs: number
-  confidence: number | null
-  completedAt: string
-}
-
-interface JobFailedEvent {
-  type: 'job_failed'
-  jobId: number
-  errorMessage: string
-  failedAt: string
-}
-
-interface QueueStatusEvent {
-  type: 'queue_status'
-  status: QueueStatus
-}
-
-interface InitialStateEvent {
-  type: 'initial_state'
-  jobs: Job[]
-  status: QueueStatus
-}
-
-type JobEvent =
-  | JobCreatedEvent
-  | JobClaimedEvent
-  | JobProgressEvent
-  | JobCompletedEvent
-  | JobFailedEvent
-  | QueueStatusEvent
-  | InitialStateEvent
+import type { JobEvent } from '../types/events'
 
 export interface UseJobEventsOptions {
   onInitialState?: (jobs: Job[], status: QueueStatus) => void

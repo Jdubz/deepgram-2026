@@ -75,17 +75,19 @@ const flacParser: FormatParser = {
     const sampleRate = (b10 << 12) | (b11 << 4) | (b12 >> 4);
 
     // Parse total samples (36 bits: 4 bits from byte 13 + 32 bits from bytes 14-17)
+    // Use BigInt to avoid integer overflow for long recordings
     const b13 = streaminfo[13],
       b14 = streaminfo[14],
       b15 = streaminfo[15];
     const b16 = streaminfo[16],
       b17 = streaminfo[17];
-    const totalSamples =
-      (b13 & 0x0f) * Math.pow(2, 32) +
-      ((b14 << 24) >>> 0) +
-      (b15 << 16) +
-      (b16 << 8) +
-      b17;
+    const totalSamples = Number(
+      (BigInt(b13 & 0x0f) << 32n) |
+      (BigInt(b14) << 24n) |
+      (BigInt(b15) << 16n) |
+      (BigInt(b16) << 8n) |
+      BigInt(b17)
+    );
 
     if (sampleRate > 0 && totalSamples > 0) {
       return totalSamples / sampleRate;

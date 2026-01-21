@@ -498,7 +498,12 @@ export class StreamHub {
     this.broadcastToViewers(message);
   }
 
-  private handleUtteranceEnd(event: UtteranceEndEvent): void {
+  /**
+   * Create a chunk from accumulated segments, broadcast it, and queue analysis
+   * @param endTimeMs - The end time of the chunk in milliseconds
+   * @param logPrefix - Prefix for log messages (e.g., "" or "Final ")
+   */
+  private createChunkFromSegments(endTimeMs: number, logPrefix: string = ""): void {
     if (!this.currentSessionId || this.accumulatedSegments.length === 0) {
       return;
     }
@@ -523,9 +528,6 @@ export class StreamHub {
       this.accumulatedSegments.reduce((sum, s) => sum + s.confidence, 0) /
       this.accumulatedSegments.length;
 
-    // Calculate end time
-    const endTimeMs = event.lastWordEnd * 1000;
-
     // Create the chunk in database
     const chunk = inferenceQueue.createStreamChunk({
       sessionId: this.currentSessionId,
@@ -538,7 +540,7 @@ export class StreamHub {
     });
 
     console.log(
-      `[StreamHub] Chunk ${chunk.id} created: speaker=${speaker}, words=${chunk.word_count}`
+      `[StreamHub] ${logPrefix}Chunk ${chunk.id} created: speaker=${speaker}, words=${chunk.word_count}`
     );
 
     // Broadcast chunk_created to viewers
@@ -567,7 +569,7 @@ export class StreamHub {
           chunkId: chunk.id,
           sessionId: this.currentSessionId,
         });
-        console.log(`[StreamHub] Queued analysis job ${jobId} for chunk ${chunk.id}`);
+        console.log(`[StreamHub] Queued analysis job ${jobId} for ${logPrefix.toLowerCase()}chunk ${chunk.id}`);
 
         // Emit events to notify job processor
         const job = inferenceQueue.getJob(jobId);
@@ -577,17 +579,24 @@ export class StreamHub {
         }
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
-        console.error(`[StreamHub] Failed to create analysis job for chunk ${chunk.id}:`, errorMsg);
-        // Chunk will have no analysis_job_id - status derived as skipped/failed
+        console.error(`[StreamHub] Failed to create analysis job for ${logPrefix.toLowerCase()}chunk ${chunk.id}:`, errorMsg);
       }
     } else {
-      // Chunk too short for analysis - no analysis_job_id means skipped
-      console.log(`[StreamHub] Chunk ${chunk.id} too short for analysis (${chunk.word_count} words)`);
+      console.log(`[StreamHub] ${logPrefix}Chunk ${chunk.id} too short for analysis (${chunk.word_count} words)`);
     }
 
     // Reset accumulator for next utterance
     this.accumulatedSegments = [];
     this.utteranceStartTimeMs = 0;
+  }
+
+  private handleUtteranceEnd(event: UtteranceEndEvent): void {
+    if (!this.currentSessionId || this.accumulatedSegments.length === 0) {
+      return;
+    }
+
+    const endTimeMs = event.lastWordEnd * 1000;
+    this.createChunkFromSegments(endTimeMs);
   }
 
   private relayAudio(audioData: Buffer): void {
@@ -635,96 +644,18 @@ export class StreamHub {
       `[StreamHub] Finalizing ${this.accumulatedSegments.length} remaining segments`
     );
 
-    // Combine accumulated segments into a single chunk
-    const combinedText = this.accumulatedSegments.map((s) => s.text).join(" ");
-
-    // Get the dominant speaker from all segments
-    const speakerCounts = new Map<number, number>();
-    for (const seg of this.accumulatedSegments) {
-      if (seg.speaker !== null) {
-        speakerCounts.set(seg.speaker, (speakerCounts.get(seg.speaker) || 0) + 1);
-      }
-    }
-    const speaker =
-      speakerCounts.size > 0
-        ? [...speakerCounts.entries()].sort((a, b) => b[1] - a[1])[0][0]
-        : null;
-
-    // Calculate average confidence
-    const avgConfidence =
-      this.accumulatedSegments.reduce((sum, s) => sum + s.confidence, 0) /
-      this.accumulatedSegments.length;
-
     // Use last segment end time as chunk end
     const lastSegment = this.accumulatedSegments[this.accumulatedSegments.length - 1];
     const endTimeMs = (lastSegment.start + lastSegment.duration) * 1000;
 
     try {
-      // Create the chunk in database
-      const chunk = inferenceQueue.createStreamChunk({
-        sessionId: this.currentSessionId,
-        chunkIndex: this.chunkIndex++,
-        speaker,
-        transcript: combinedText,
-        confidence: avgConfidence,
-        startTimeMs: this.utteranceStartTimeMs,
-        endTimeMs: endTimeMs,
-      });
-
-      console.log(
-        `[StreamHub] Final chunk ${chunk.id} created: speaker=${speaker}, words=${chunk.word_count}`
-      );
-
-      // Broadcast chunk_created
-      const chunkCreatedMessage: ChunkCreatedMessage = {
-        type: "chunk_created",
-        sessionId: this.currentSessionId,
-        chunk: {
-          id: chunk.id,
-          index: chunk.chunk_index,
-          speaker: chunk.speaker,
-          transcript: chunk.transcript,
-          startTimeMs: chunk.start_time_ms,
-          endTimeMs: chunk.end_time_ms,
-        },
-      };
-
-      if (this.broadcaster && this.broadcasterAuthenticated) {
-        this.sendMessage(this.broadcaster, chunkCreatedMessage);
-      }
-      this.broadcastToViewers(chunkCreatedMessage);
-
-      // Queue analysis job if chunk has enough words
-      if (chunk.word_count >= MIN_WORDS_FOR_ANALYSIS) {
-        try {
-          const jobId = inferenceQueue.createAnalyzeChunkJob({
-            chunkId: chunk.id,
-            sessionId: this.currentSessionId,
-          });
-          console.log(`[StreamHub] Queued analysis job ${jobId} for final chunk ${chunk.id}`);
-
-          // Emit events to notify job processor
-          const job = inferenceQueue.getJob(jobId);
-          if (job) {
-            jobEventHub.emitJobCreated(job);
-            jobEventHub.emitQueueStatus();
-          }
-        } catch (jobErr) {
-          const errorMsg = jobErr instanceof Error ? jobErr.message : String(jobErr);
-          console.error(`[StreamHub] Failed to create analysis job for final chunk ${chunk.id}:`, errorMsg);
-          // Chunk will have no analysis_job_id - status derived as skipped/failed
-        }
-      } else {
-        // Final chunk too short for analysis
-        console.log(`[StreamHub] Final chunk ${chunk.id} too short for analysis`);
-      }
+      this.createChunkFromSegments(endTimeMs, "Final ");
     } catch (err) {
       console.error("[StreamHub] Failed to create final chunk:", err);
+      // Clear accumulator even on error
+      this.accumulatedSegments = [];
+      this.utteranceStartTimeMs = 0;
     }
-
-    // Clear accumulator
-    this.accumulatedSegments = [];
-    this.utteranceStartTimeMs = 0;
   }
 
   private finalizeSession(): void {
@@ -820,6 +751,13 @@ export class StreamHub {
       isLive: this.broadcasterAuthenticated && !!this.deepgramStream,
       viewerCount: this.viewers.size,
     });
+
+    // If there's an active session, replay existing chunks from the database
+    // Note: We don't send session_created here because it triggers a state reset
+    // in the frontend. The chunks contain all the info needed.
+    if (this.currentSessionId) {
+      this.replayChunksToViewer(ws, this.currentSessionId);
+    }
 
     ws.on("close", () => {
       this.viewers.delete(ws);
@@ -930,6 +868,51 @@ export class StreamHub {
 
     // Broadcast to all viewers
     this.broadcastToViewers(message);
+  }
+
+  /**
+   * Replay existing chunks from database to a newly connected viewer
+   * This allows viewers to see transcript history when joining mid-session or after refresh
+   */
+  private replayChunksToViewer(ws: WebSocket, sessionId: string): void {
+    try {
+      const chunks = inferenceQueue.getSessionChunksWithAnalysis(sessionId);
+      console.log(`[StreamHub] Replaying ${chunks.length} chunks to new viewer`);
+
+      for (const chunk of chunks) {
+        // Send chunk_created message
+        const chunkCreatedMsg: ChunkCreatedMessage = {
+          type: "chunk_created",
+          sessionId,
+          chunk: {
+            id: chunk.id,
+            index: chunk.chunk_index,
+            speaker: chunk.speaker,
+            transcript: chunk.transcript,
+            startTimeMs: chunk.start_time_ms,
+            endTimeMs: chunk.end_time_ms,
+          },
+        };
+        this.sendMessage(ws, chunkCreatedMsg);
+
+        // If chunk has been analyzed, send the analysis results
+        if (chunk.analysisJob && chunk.analysisJob.status === "completed") {
+          const analysisResults = inferenceQueue.parseAnalysisResults(chunk.analysisJob);
+          const chunkAnalyzedMsg: ChunkAnalyzedMessage = {
+            type: "chunk_analyzed",
+            sessionId,
+            chunkId: chunk.id,
+            topics: analysisResults.topics,
+            intents: analysisResults.intents,
+            summary: analysisResults.summary || "",
+            sentiment: analysisResults.sentiment,
+          };
+          this.sendMessage(ws, chunkAnalyzedMsg);
+        }
+      }
+    } catch (error) {
+      console.error("[StreamHub] Error replaying chunks to viewer:", error);
+    }
   }
 }
 

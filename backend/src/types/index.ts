@@ -15,7 +15,7 @@ export enum Provider {
  */
 export interface TranscriptionResult {
   text: string;
-  confidence: number; // 0-1 overall confidence score
+  confidence?: number; // 0-1 overall confidence score (optional - not all providers return this)
   model: string;
   processingTimeMs: number;
   rawResponse: unknown;

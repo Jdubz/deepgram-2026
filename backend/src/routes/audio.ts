@@ -12,6 +12,7 @@ import { Router, Request, Response } from "express";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import fsPromises from "fs/promises";
 import { v4 as uuidv4 } from "uuid";
 import { audioService } from "../services/audio.js";
 import { inferenceQueue } from "../services/inference-queue.js";
@@ -128,7 +129,15 @@ router.post(
 
       // Extract duration from audio file for filtering support
       // Also validates that file content matches declared type (magic byte check)
-      const fileContent = fs.readFileSync(filePath);
+      let fileContent: Buffer;
+      try {
+        fileContent = await fsPromises.readFile(filePath);
+      } catch (readErr) {
+        console.error("Failed to read uploaded file:", readErr);
+        res.status(500).json({ error: "Failed to read uploaded file" });
+        return;
+      }
+
       const audioResult = await audioService.validateAndExtract(
         id,
         fileContent,
@@ -140,7 +149,7 @@ router.post(
       // Handle validation errors with appropriate 400 responses
       if (!audioResult.valid) {
         // Clean up the uploaded file since validation failed
-        fs.unlinkSync(filePath);
+        await fsPromises.unlink(filePath).catch((e) => console.error("Cleanup failed:", e));
 
         const errorResponse: {
           error: string;
@@ -298,14 +307,21 @@ router.get("/download", async (req: Request, res: Response): Promise<void> => {
     }
 
     // Check if file exists on disk
-    if (!submission.file_path || !fs.existsSync(submission.file_path)) {
+    if (!submission.file_path) {
+      res.status(404).json({ error: "File not found on disk" });
+      return;
+    }
+
+    let stat: fs.Stats;
+    try {
+      stat = await fsPromises.stat(submission.file_path);
+    } catch {
       res.status(404).json({ error: "File not found on disk" });
       return;
     }
 
     const filename = submission.original_filename || submission.filename;
     const mimeType = submission.mime_type || "application/octet-stream";
-    const stat = fs.statSync(submission.file_path);
 
     res.setHeader("Content-Type", mimeType);
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);

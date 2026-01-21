@@ -86,6 +86,8 @@ export function useWebSocket<TMessage = unknown>(
     }
 
     ws.onclose = () => {
+      // Check if this is the current WebSocket (not a stale one from cleanup race)
+      if (wsRef.current !== ws) return
       if (!isMountedRef.current) return
 
       setConnectionState('disconnected')
@@ -152,7 +154,10 @@ export function useWebSocket<TMessage = unknown>(
         clearTimeout(reconnectTimeoutRef.current)
       }
       if (wsRef.current) {
-        wsRef.current.close()
+        // Clear ref before closing to prevent stale onclose from triggering reconnect
+        const ws = wsRef.current
+        wsRef.current = null
+        ws.close()
       }
     }
   }, [enabled, connect, disconnect, autoReconnect])

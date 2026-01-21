@@ -160,7 +160,7 @@ function App() {
 
       {/* Watch Tab - kept mounted to preserve connection */}
       <div style={{ display: activeTab === 'watch' ? 'block' : 'none' }}>
-        <StreamViewer isActive={activeTab === 'watch'} />
+        <StreamViewer isActive={activeTab === 'watch'} onSessionCreated={fetchFiles} />
       </div>
 
       {fileInfo && <FileInfoModal fileInfo={fileInfo} onClose={() => setFileInfo(null)} onDownload={handleDownload} />}
