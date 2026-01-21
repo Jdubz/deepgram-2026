@@ -12,7 +12,7 @@
 import Database from "better-sqlite3";
 import fs from "fs";
 import { database } from "../db/database.js";
-import { Provider } from "../types/index.js";
+import { Provider, SentimentResult } from "../types/index.js";
 
 export type JobType = "transcribe" | "summarize" | "analyze_chunk";
 export type JobStatus = "pending" | "processing" | "completed" | "failed";
@@ -49,14 +49,6 @@ export interface AudioSubmission {
   mime_type: string | null;
   file_size: number | null;
   duration_seconds: number | null;
-  transcript: string | null;
-  transcript_job_id: number | null;
-  transcript_confidence: number | null;
-  transcribed_at: string | null;
-  summary: string | null;
-  summary_job_id: number | null;
-  summary_confidence: number | null;
-  summarized_at: string | null;
   status: SubmissionStatus;
   error_message: string | null;
   metadata: string | null;
@@ -125,12 +117,7 @@ export interface StreamChunk {
   start_time_ms: number;
   end_time_ms: number;
   word_count: number;
-  topics: string | null;
-  intents: string | null;
-  summary: string | null;
   analysis_job_id: number | null;
-  analysis_status: AnalysisStatus;
-  analyzed_at: string | null;
   created_at: string;
 }
 
@@ -157,10 +144,43 @@ export interface CreateAnalyzeChunkJobParams {
   metadata?: Record<string, unknown>;
 }
 
+// Re-export SentimentResult as ChunkSentiment for backward compatibility
+export type ChunkSentiment = SentimentResult;
+
 export interface ChunkAnalysisResult {
   topics: Array<{ topic: string; confidence: number }>;
   intents: Array<{ intent: string; confidence: number }>;
   summary: string;
+  sentiment: ChunkSentiment | null;
+}
+
+// ===========================================================================
+// Joined Result Types (for Jobs as Single Source of Truth)
+// ===========================================================================
+
+/**
+ * Submission with its related transcribe and summarize jobs
+ */
+export interface SubmissionWithJobs extends AudioSubmission {
+  transcriptJob: Job | null;
+  summarizeJob: Job | null;
+}
+
+/**
+ * Stream chunk with its analysis job
+ */
+export interface ChunkWithAnalysis extends StreamChunk {
+  analysisJob: Job | null;
+}
+
+/**
+ * Parsed analysis results from job's raw_response
+ */
+export interface ParsedAnalysisResults {
+  topics: Array<{ topic: string; confidence: number }>;
+  intents: Array<{ intent: string; confidence: number }>;
+  sentiment: ChunkSentiment | null;
+  summary: string | null;
 }
 
 class InferenceQueueService {
@@ -472,6 +492,7 @@ class InferenceQueueService {
 
   /**
    * Mark a job as completed with output and raw response
+   * Verifies job exists and was in processing state
    */
   completeJob(
     jobId: number,
@@ -483,6 +504,7 @@ class InferenceQueueService {
   ): void {
     const db = this.getDb();
 
+    // Only update if job exists and is in processing state
     const stmt = db.prepare(`
       UPDATE jobs
       SET status = 'completed',
@@ -493,10 +515,10 @@ class InferenceQueueService {
           raw_response = ?,
           raw_response_type = ?,
           completed_at = datetime('now')
-      WHERE id = ?
+      WHERE id = ? AND status = 'processing'
     `);
 
-    stmt.run(
+    const result = stmt.run(
       outputText,
       modelUsed,
       processingTimeMs,
@@ -505,23 +527,49 @@ class InferenceQueueService {
       rawResponse ? typeof rawResponse : null,
       jobId
     );
+
+    if (result.changes === 0) {
+      // Check if job exists to provide better error message
+      const job = this.getJob(jobId);
+      if (!job) {
+        console.warn(`[InferenceQueue] completeJob: Job ${jobId} not found`);
+      } else if (job.status !== "processing") {
+        console.warn(
+          `[InferenceQueue] completeJob: Job ${jobId} was in '${job.status}' state, not 'processing'`
+        );
+      }
+    }
   }
 
   /**
    * Mark a job as failed with error message
+   * Verifies job exists and was in processing state
    */
   failJob(jobId: number, errorMessage: string): void {
     const db = this.getDb();
 
+    // Only update if job exists and is in processing state
     const stmt = db.prepare(`
       UPDATE jobs
       SET status = 'failed',
           error_message = ?,
           completed_at = datetime('now')
-      WHERE id = ?
+      WHERE id = ? AND status = 'processing'
     `);
 
-    stmt.run(errorMessage, jobId);
+    const result = stmt.run(errorMessage, jobId);
+
+    if (result.changes === 0) {
+      // Check if job exists to provide better error message
+      const job = this.getJob(jobId);
+      if (!job) {
+        console.warn(`[InferenceQueue] failJob: Job ${jobId} not found`);
+      } else if (job.status !== "processing") {
+        console.warn(
+          `[InferenceQueue] failJob: Job ${jobId} was in '${job.status}' state, not 'processing'`
+        );
+      }
+    }
   }
 
   /**
@@ -549,54 +597,6 @@ class InferenceQueueService {
       `);
       stmt.run(status, submissionId);
     }
-  }
-
-  /**
-   * Update submission with transcript
-   */
-  updateSubmissionTranscript(
-    submissionId: string,
-    transcript: string,
-    jobId: number,
-    confidence?: number
-  ): void {
-    const db = this.getDb();
-
-    const stmt = db.prepare(`
-      UPDATE audio_submissions
-      SET transcript = ?,
-          transcript_job_id = ?,
-          transcript_confidence = ?,
-          transcribed_at = datetime('now'),
-          updated_at = datetime('now')
-      WHERE id = ?
-    `);
-
-    stmt.run(transcript, jobId, confidence ?? null, submissionId);
-  }
-
-  /**
-   * Update submission with summary
-   */
-  updateSubmissionSummary(
-    submissionId: string,
-    summary: string,
-    jobId: number,
-    confidence?: number
-  ): void {
-    const db = this.getDb();
-
-    const stmt = db.prepare(`
-      UPDATE audio_submissions
-      SET summary = ?,
-          summary_job_id = ?,
-          summary_confidence = ?,
-          summarized_at = datetime('now'),
-          updated_at = datetime('now')
-      WHERE id = ?
-    `);
-
-    stmt.run(summary, jobId, confidence ?? null, submissionId);
   }
 
   /**
@@ -707,33 +707,24 @@ class InferenceQueueService {
   }
 
   /**
-   * Finalize a stream submission with file size and combined transcript
+   * Finalize a stream submission with file size and duration
+   * Note: Combined transcript is derived from stream_chunks when needed
    */
   finalizeStreamSubmission(
     submissionId: string,
     fileSize: number,
-    combinedTranscript?: string
+    durationSeconds: number
   ): void {
     const db = this.getDb();
 
-    if (combinedTranscript) {
-      db.prepare(`
-        UPDATE audio_submissions
-        SET file_size = ?,
-            transcript = ?,
-            status = 'completed',
-            updated_at = datetime('now')
-        WHERE id = ?
-      `).run(fileSize, combinedTranscript, submissionId);
-    } else {
-      db.prepare(`
-        UPDATE audio_submissions
-        SET file_size = ?,
-            status = 'completed',
-            updated_at = datetime('now')
-        WHERE id = ?
-      `).run(fileSize, submissionId);
-    }
+    db.prepare(`
+      UPDATE audio_submissions
+      SET file_size = ?,
+          duration_seconds = ?,
+          status = 'completed',
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).run(fileSize, durationSeconds, submissionId);
   }
 
   // ===========================================================================
@@ -787,63 +778,13 @@ class InferenceQueueService {
   }
 
   /**
-   * Update chunk analysis status
+   * Get chunks that need analysis (no analysis_job_id set yet)
    */
-  updateChunkAnalysisStatus(
-    chunkId: number,
-    status: AnalysisStatus,
-    jobId?: number
-  ): void {
-    const db = this.getDb();
-
-    if (jobId !== undefined) {
-      db.prepare(`
-        UPDATE stream_chunks
-        SET analysis_status = ?, analysis_job_id = ?
-        WHERE id = ?
-      `).run(status, jobId, chunkId);
-    } else {
-      db.prepare(`
-        UPDATE stream_chunks
-        SET analysis_status = ?
-        WHERE id = ?
-      `).run(status, chunkId);
-    }
-  }
-
-  /**
-   * Update chunk with analysis results
-   */
-  updateChunkAnalysis(
-    chunkId: number,
-    results: ChunkAnalysisResult
-  ): void {
-    const db = this.getDb();
-
-    db.prepare(`
-      UPDATE stream_chunks
-      SET topics = ?,
-          intents = ?,
-          summary = ?,
-          analysis_status = 'completed',
-          analyzed_at = datetime('now')
-      WHERE id = ?
-    `).run(
-      JSON.stringify(results.topics),
-      JSON.stringify(results.intents),
-      results.summary,
-      chunkId
-    );
-  }
-
-  /**
-   * Get chunks pending analysis for a session
-   */
-  getPendingAnalysisChunks(sessionId: string): StreamChunk[] {
+  getChunksNeedingAnalysis(sessionId: string): StreamChunk[] {
     const db = this.getDb();
     const stmt = db.prepare(`
       SELECT * FROM stream_chunks
-      WHERE session_id = ? AND analysis_status = 'pending'
+      WHERE session_id = ? AND analysis_job_id IS NULL
       ORDER BY chunk_index ASC
     `);
     return stmt.all(sessionId) as StreamChunk[];
@@ -863,6 +804,32 @@ class InferenceQueueService {
     const chunk = this.getStreamChunk(params.chunkId);
     if (!chunk) {
       throw new Error(`Chunk ${params.chunkId} not found`);
+    }
+
+    // Validate chunk state to prevent duplicate jobs
+    // If chunk already has an analysis_job_id, check the job status
+    if (chunk.analysis_job_id) {
+      const existingJob = this.getJob(chunk.analysis_job_id);
+      if (existingJob) {
+        if (existingJob.status === "processing" || existingJob.status === "pending") {
+          throw new Error(
+            `Chunk ${params.chunkId} already has a pending analysis job (job_id: ${chunk.analysis_job_id})`
+          );
+        }
+        if (existingJob.status === "completed") {
+          throw new Error(
+            `Chunk ${params.chunkId} has already been analyzed`
+          );
+        }
+        // If job failed, allow re-analysis by continuing
+      }
+    }
+
+    // Validate transcript is non-empty
+    if (!chunk.transcript || !chunk.transcript.trim()) {
+      throw new Error(
+        `Chunk ${params.chunkId} has empty transcript, skipping analysis`
+      );
     }
 
     // Create the job with chunk info in metadata
@@ -886,7 +853,7 @@ class InferenceQueueService {
     const jobId = result.lastInsertRowid as number;
 
     // Update chunk to reference the job
-    this.updateChunkAnalysisStatus(params.chunkId, "processing", jobId);
+    this.setChunkAnalysisJob(params.chunkId, jobId);
 
     return jobId;
   }
@@ -897,11 +864,11 @@ class InferenceQueueService {
 
   /**
    * Get submissions with optional filtering (for GET /list)
+   * Note: minConfidence filter removed - confidence is now in jobs table
    */
   getSubmissionsFiltered(query: {
     maxDuration?: number;
     minDuration?: number;
-    minConfidence?: number;
     limit?: number;
     offset?: number;
   }): { submissions: AudioSubmission[]; total: number } {
@@ -918,10 +885,6 @@ class InferenceQueueService {
     if (query.minDuration !== undefined) {
       conditions.push("duration_seconds >= ?");
       params.push(query.minDuration);
-    }
-    if (query.minConfidence !== undefined) {
-      conditions.push("transcript_confidence >= ?");
-      params.push(query.minConfidence);
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -1115,6 +1078,205 @@ class InferenceQueueService {
       heartbeat_count: number;
       model_verified: number;
     }) | null;
+  }
+
+  // ===========================================================================
+  // Jobs as Single Source of Truth - JOIN Query Methods
+  // ===========================================================================
+
+  /**
+   * Get submission with its related transcribe and summarize jobs
+   */
+  getSubmissionWithJobs(submissionId: string): SubmissionWithJobs | null {
+    const db = this.getDb();
+
+    const submission = this.getSubmission(submissionId);
+    if (!submission) return null;
+
+    // Get the most recent transcribe job for this submission
+    const transcriptJob = db.prepare(`
+      SELECT * FROM jobs
+      WHERE audio_file_id = ? AND job_type = 'transcribe'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(submissionId) as Job | undefined;
+
+    // Get the most recent summarize job for this submission
+    const summarizeJob = db.prepare(`
+      SELECT * FROM jobs
+      WHERE audio_file_id = ? AND job_type = 'summarize'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(submissionId) as Job | undefined;
+
+    return {
+      ...submission,
+      transcriptJob: transcriptJob || null,
+      summarizeJob: summarizeJob || null,
+    };
+  }
+
+  /**
+   * Get a stream chunk with its analysis job
+   */
+  getChunkWithAnalysis(chunkId: number): ChunkWithAnalysis | null {
+    const chunk = this.getStreamChunk(chunkId);
+    if (!chunk) return null;
+
+    let analysisJob: Job | null = null;
+    if (chunk.analysis_job_id) {
+      analysisJob = this.getJob(chunk.analysis_job_id);
+    }
+
+    return { ...chunk, analysisJob };
+  }
+
+  /**
+   * Get all chunks for a session with their analysis jobs (single efficient query)
+   */
+  getSessionChunksWithAnalysis(sessionId: string): ChunkWithAnalysis[] {
+    const db = this.getDb();
+
+    const rows = db.prepare(`
+      SELECT
+        c.id, c.session_id, c.chunk_index, c.speaker, c.transcript,
+        c.confidence, c.start_time_ms, c.end_time_ms, c.word_count,
+        c.analysis_job_id, c.created_at,
+        j.id as job_id, j.job_type as job_type, j.status as job_status,
+        j.provider as job_provider, j.output_text as job_output_text,
+        j.error_message as job_error_message, j.created_at as job_created_at,
+        j.completed_at as job_completed_at, j.processing_time_ms as job_processing_time_ms,
+        j.model_used as job_model_used, j.confidence as job_confidence,
+        j.raw_response as job_raw_response
+      FROM stream_chunks c
+      LEFT JOIN jobs j ON c.analysis_job_id = j.id
+      WHERE c.session_id = ?
+      ORDER BY c.chunk_index ASC
+    `).all(sessionId) as Array<Record<string, unknown>>;
+
+    return rows.map((row) => ({
+      id: row.id as number,
+      session_id: row.session_id as string,
+      chunk_index: row.chunk_index as number,
+      speaker: row.speaker as number | null,
+      transcript: row.transcript as string,
+      confidence: row.confidence as number | null,
+      start_time_ms: row.start_time_ms as number,
+      end_time_ms: row.end_time_ms as number,
+      word_count: row.word_count as number,
+      analysis_job_id: row.analysis_job_id as number | null,
+      created_at: row.created_at as string,
+      analysisJob: row.job_id ? {
+        id: row.job_id as number,
+        job_type: row.job_type as JobType,
+        status: row.job_status as JobStatus,
+        provider: row.job_provider as Provider,
+        input_file_path: null,
+        input_text: null,
+        output_text: row.job_output_text as string | null,
+        error_message: row.job_error_message as string | null,
+        audio_file_id: null,
+        metadata: null,
+        created_at: row.job_created_at as string,
+        started_at: null,
+        completed_at: row.job_completed_at as string | null,
+        processing_time_ms: row.job_processing_time_ms as number | null,
+        model_used: row.job_model_used as string | null,
+        confidence: row.job_confidence as number | null,
+        raw_response: row.job_raw_response as string | null,
+        raw_response_type: null,
+      } : null,
+    }));
+  }
+
+  /**
+   * Parse analysis results from a job's raw_response (Deepgram format)
+   */
+  parseAnalysisResults(job: Job | null): ParsedAnalysisResults {
+    const empty: ParsedAnalysisResults = {
+      topics: [],
+      intents: [],
+      sentiment: null,
+      summary: null,
+    };
+
+    if (!job || !job.raw_response) {
+      // If no raw_response but job has output_text, use that as summary
+      if (job?.output_text) {
+        return { ...empty, summary: job.output_text };
+      }
+      return empty;
+    }
+
+    try {
+      const raw = JSON.parse(job.raw_response);
+
+      // Handle Deepgram Text Intelligence response format
+      const results = raw.results;
+      if (!results) {
+        // Fallback: maybe raw_response is already the structured data
+        return {
+          topics: raw.topics || [],
+          intents: raw.intents || [],
+          sentiment: raw.sentiment || null,
+          summary: raw.summary || job.output_text || null,
+        };
+      }
+
+      // Extract topics from Deepgram format
+      const topics: Array<{ topic: string; confidence: number }> = [];
+      if (results.topics?.segments) {
+        for (const segment of results.topics.segments) {
+          if (segment.topics) {
+            topics.push(...segment.topics);
+          }
+        }
+      }
+
+      // Extract intents from Deepgram format
+      const intents: Array<{ intent: string; confidence: number }> = [];
+      if (results.intents?.segments) {
+        for (const segment of results.intents.segments) {
+          if (segment.intents) {
+            intents.push(...segment.intents);
+          }
+        }
+      }
+
+      // Extract sentiment from Deepgram format
+      let sentiment: ChunkSentiment | null = null;
+      if (results.sentiments?.average) {
+        const avgSentiment = results.sentiments.average.sentiment;
+        const avgScore = results.sentiments.average.sentiment_score;
+        sentiment = {
+          sentiment: avgSentiment,
+          sentimentScore: avgScore,
+          average: {
+            sentiment: avgSentiment,
+            sentimentScore: avgScore,
+          },
+        };
+      }
+
+      // Extract summary
+      const summary = results.summary?.short || job.output_text || null;
+
+      return { topics, intents, sentiment, summary };
+    } catch {
+      // If parsing fails, return output_text as summary
+      return { ...empty, summary: job.output_text };
+    }
+  }
+
+  /**
+   * Set the analysis job ID for a chunk (replaces updateChunkAnalysisStatus)
+   */
+  setChunkAnalysisJob(chunkId: number, jobId: number): void {
+    const db = this.getDb();
+    db.prepare("UPDATE stream_chunks SET analysis_job_id = ? WHERE id = ?").run(
+      jobId,
+      chunkId
+    );
   }
 }
 

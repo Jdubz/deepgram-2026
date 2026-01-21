@@ -11,18 +11,28 @@
  * Key features:
  * - Model availability checking before inference
  * - Streaming support for LLM calls with heartbeat tracking
- * - Proper error handling for model loading failures
+ * - Structured JSON output with Zod validation for text analysis
+ * - Fallback handling for malformed LLM responses
  */
 
 import fs from "fs";
 import path from "path";
+import { z } from "zod";
 import {
   Provider,
   InferenceProvider,
   TranscriptionResult,
   SummarizationResult,
+  TopicResult,
+  IntentResult,
+  SentimentResult,
 } from "../types/index.js";
-import { AUDIO_CONTENT_TYPE_MAP, SUMMARIZATION_SYSTEM_PROMPT } from "../constants.js";
+import {
+  AUDIO_CONTENT_TYPE_MAP,
+  TEXT_ANALYSIS_SYSTEM_PROMPT,
+  TEXT_ANALYSIS_USER_PROMPT,
+  SUMMARIZATION_FALLBACK_PROMPT,
+} from "../constants.js";
 
 /**
  * Heartbeat callback for tracking job progress during streaming
@@ -42,6 +52,40 @@ const DEFAULT_CONFIG: LocalAIConfig = {
   llmModel: process.env.LOCALAI_LLM_MODEL || "qwen2.5-7b",
   timeoutMs: 300000, // 5 minutes for long audio
 };
+
+// Zod schemas for validating LLM JSON output
+const TopicSchema = z.object({
+  topic: z.string(),
+  confidence: z.number().min(0).max(1),
+});
+
+const IntentSchema = z.object({
+  intent: z.string(),
+  confidence: z.number().min(0).max(1),
+});
+
+const SentimentSchema = z.object({
+  sentiment: z.enum(["positive", "negative", "neutral"]),
+  // Accept either 'score' or 'sentimentScore' from LLM, normalize to sentimentScore
+  score: z.number().min(-1).max(1).optional(),
+  sentimentScore: z.number().min(-1).max(1).optional(),
+}).transform((data) => ({
+  sentiment: data.sentiment,
+  sentimentScore: data.sentimentScore ?? data.score ?? 0,
+  average: {
+    sentiment: data.sentiment,
+    sentimentScore: data.sentimentScore ?? data.score ?? 0,
+  },
+}));
+
+const TextAnalysisResponseSchema = z.object({
+  summary: z.string(),
+  topics: z.array(TopicSchema).optional().default([]),
+  intents: z.array(IntentSchema).optional().default([]),
+  sentiment: SentimentSchema.optional(),
+});
+
+type TextAnalysisResponse = z.infer<typeof TextAnalysisResponseSchema>;
 
 class LocalAIService implements InferenceProvider {
   public readonly name = Provider.LOCAL;
@@ -106,12 +150,48 @@ class LocalAIService implements InferenceProvider {
   }
 
   /**
-   * Generate summary using LocalAI's chat completions endpoint
-   * POST /v1/chat/completions (OpenAI-compatible)
+   * Extract JSON from LLM response that may contain markdown or extra text
    */
-  async summarize(transcript: string): Promise<SummarizationResult> {
-    const startTime = Date.now();
+  private extractJson(text: string): string {
+    // Try to find JSON in markdown code blocks
+    const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlockMatch) {
+      return codeBlockMatch[1].trim();
+    }
 
+    // Try to find JSON object directly
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return jsonMatch[0];
+    }
+
+    return text.trim();
+  }
+
+  /**
+   * Parse and validate the LLM response as structured analysis
+   * Returns null if parsing fails
+   */
+  private parseAnalysisResponse(content: string): TextAnalysisResponse | null {
+    try {
+      const jsonStr = this.extractJson(content);
+      const parsed = JSON.parse(jsonStr);
+      const validated = TextAnalysisResponseSchema.parse(parsed);
+      return validated;
+    } catch (error) {
+      console.warn("[LocalAI] Failed to parse analysis response:", error);
+      return null;
+    }
+  }
+
+  /**
+   * Make a chat completion request to LocalAI
+   */
+  private async chatCompletion(
+    systemPrompt: string,
+    userPrompt: string,
+    options: { temperature?: number; maxTokens?: number } = {}
+  ): Promise<{ content: string; tokensUsed: number; rawResponse: unknown }> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.config.timeoutMs);
 
@@ -124,11 +204,11 @@ class LocalAIService implements InferenceProvider {
           body: JSON.stringify({
             model: this.config.llmModel,
             messages: [
-              { role: "system", content: SUMMARIZATION_SYSTEM_PROMPT },
-              { role: "user", content: `Summarize this transcript:\n\n${transcript}` },
+              { role: "system", content: systemPrompt },
+              { role: "user", content: userPrompt },
             ],
-            temperature: 0.3,
-            max_tokens: 500,
+            temperature: options.temperature ?? 0.3,
+            max_tokens: options.maxTokens ?? 800,
           }),
           signal: controller.signal,
         }
@@ -136,7 +216,7 @@ class LocalAIService implements InferenceProvider {
 
       if (!response.ok) {
         const error = await response.text();
-        throw new Error(`LocalAI summarization failed: ${response.status} - ${error}`);
+        throw new Error(`LocalAI chat completion failed: ${response.status} - ${error}`);
       }
 
       interface ChatCompletionResponse {
@@ -146,16 +226,67 @@ class LocalAIService implements InferenceProvider {
       const rawResponse = (await response.json()) as ChatCompletionResponse;
 
       return {
-        text: rawResponse.choices?.[0]?.message?.content || "",
-        confidence: 0.80, // Optional: LocalAI doesn't provide confidence for summaries
-        model: this.config.llmModel,
+        content: rawResponse.choices?.[0]?.message?.content || "",
         tokensUsed: rawResponse.usage?.total_tokens || 0,
-        processingTimeMs: Date.now() - startTime,
         rawResponse,
       };
     } finally {
       clearTimeout(timeoutId);
     }
+  }
+
+  /**
+   * Generate summary and full text analysis using LocalAI's chat completions
+   * Returns structured analysis with topics, intents, sentiment, and summary
+   * Falls back to plain summary if JSON parsing fails
+   */
+  async summarize(transcript: string): Promise<SummarizationResult> {
+    const startTime = Date.now();
+
+    // Try structured analysis first
+    const userPrompt = TEXT_ANALYSIS_USER_PROMPT.replace("{TEXT}", transcript);
+    const { content, tokensUsed, rawResponse } = await this.chatCompletion(
+      TEXT_ANALYSIS_SYSTEM_PROMPT,
+      userPrompt,
+      { temperature: 0.3, maxTokens: 800 }
+    );
+
+    // Try to parse as structured JSON
+    const analysis = this.parseAnalysisResponse(content);
+
+    if (analysis) {
+      // Successfully parsed structured response
+      return {
+        text: analysis.summary,
+        confidence: 0.85,
+        model: this.config.llmModel,
+        tokensUsed,
+        processingTimeMs: Date.now() - startTime,
+        rawResponse,
+        topics: analysis.topics as TopicResult[],
+        intents: analysis.intents as IntentResult[],
+        sentiment: analysis.sentiment as SentimentResult | undefined,
+      };
+    }
+
+    // Fallback: try a simpler summarization prompt
+    console.warn("[LocalAI] Structured analysis failed, falling back to simple summary");
+    const fallbackPrompt = SUMMARIZATION_FALLBACK_PROMPT.replace("{TEXT}", transcript);
+    const fallbackResult = await this.chatCompletion(
+      "You are a helpful assistant that summarizes text concisely.",
+      fallbackPrompt,
+      { temperature: 0.3, maxTokens: 300 }
+    );
+
+    return {
+      text: fallbackResult.content.trim(),
+      confidence: 0.70, // Lower confidence for fallback
+      model: this.config.llmModel,
+      tokensUsed: tokensUsed + fallbackResult.tokensUsed,
+      processingTimeMs: Date.now() - startTime,
+      rawResponse: { primary: rawResponse, fallback: fallbackResult.rawResponse },
+      // No structured fields in fallback mode
+    };
   }
 
   /**
@@ -235,6 +366,7 @@ class LocalAIService implements InferenceProvider {
   /**
    * Summarize with streaming - provides heartbeat callbacks for each token
    * This allows detecting stuck jobs by monitoring token generation
+   * Note: Returns structured analysis like summarize() but with streaming
    */
   async summarizeWithHeartbeat(
     transcript: string,
@@ -256,6 +388,8 @@ class LocalAIService implements InferenceProvider {
     const timeoutId = setTimeout(() => controller.abort(), this.config.timeoutMs);
 
     try {
+      const userPrompt = TEXT_ANALYSIS_USER_PROMPT.replace("{TEXT}", transcript);
+
       const response = await fetch(
         `${this.config.baseUrl}/v1/chat/completions`,
         {
@@ -264,11 +398,11 @@ class LocalAIService implements InferenceProvider {
           body: JSON.stringify({
             model: this.config.llmModel,
             messages: [
-              { role: "system", content: SUMMARIZATION_SYSTEM_PROMPT },
-              { role: "user", content: `Summarize this transcript:\n\n${transcript}` },
+              { role: "system", content: TEXT_ANALYSIS_SYSTEM_PROMPT },
+              { role: "user", content: userPrompt },
             ],
             temperature: 0.3,
-            max_tokens: 500,
+            max_tokens: 800,
             stream: true, // Enable streaming for heartbeat tracking
           }),
           signal: controller.signal,
@@ -339,12 +473,32 @@ class LocalAIService implements InferenceProvider {
         }
       }
 
+      // Parse the accumulated response
+      const analysis = this.parseAnalysisResponse(fullText);
+
+      if (analysis) {
+        return {
+          text: analysis.summary,
+          confidence: 0.85,
+          model: this.config.llmModel,
+          tokensUsed: tokenCount,
+          processingTimeMs: Date.now() - startTime,
+          rawResponse: { streamed: true, tokenCount },
+          topics: analysis.topics as TopicResult[],
+          intents: analysis.intents as IntentResult[],
+          sentiment: analysis.sentiment as SentimentResult | undefined,
+        };
+      }
+
+      // Fallback if parsing failed - use raw text as summary
+      console.warn("[LocalAI] Streaming: structured analysis failed, using raw text");
       return {
-        text: fullText,
+        text: fullText.slice(0, 500), // Truncate to reasonable summary length
+        confidence: 0.60,
         model: this.config.llmModel,
         tokensUsed: tokenCount,
         processingTimeMs: Date.now() - startTime,
-        rawResponse: { streamed: true, tokenCount },
+        rawResponse: { streamed: true, tokenCount, parseError: true },
       };
     } finally {
       clearTimeout(timeoutId);

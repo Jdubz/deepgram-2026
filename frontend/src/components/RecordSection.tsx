@@ -1,16 +1,14 @@
 import { useRef, useState } from 'react'
+import { useProvider } from '../contexts'
 
 interface RecordSectionProps {
-  provider: 'local' | 'deepgram'
-  onProviderChange: (provider: 'local' | 'deepgram') => void
   onUploadSuccess: () => void
 }
 
 export function RecordSection({
-  provider,
-  onProviderChange,
   onUploadSuccess,
 }: RecordSectionProps) {
+  const { provider, setProvider } = useProvider()
   const [isRecording, setIsRecording] = useState(false)
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
@@ -207,7 +205,7 @@ export function RecordSection({
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
             <select
               value={provider}
-              onChange={(e) => onProviderChange(e.target.value as 'local' | 'deepgram')}
+              onChange={(e) => setProvider(e.target.value as 'local' | 'deepgram')}
               style={{ padding: '8px 12px' }}
               disabled={uploading}
             >

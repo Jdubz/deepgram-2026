@@ -17,6 +17,10 @@ export default defineConfig({
         target: 'ws://localhost:3001',
         ws: true,
       },
+      '/jobs': {
+        target: 'ws://localhost:3001',
+        ws: true,
+      },
     },
   },
 })

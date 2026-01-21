@@ -1,0 +1,202 @@
+{
+  "info": {
+    "name": "Deepgram Audio API",
+    "_postman_id": "deepgram-audio-api-collection",
+    "description": "API collection for the Deepgram Audio transcription and analysis service",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://deepgram.joshwentworth.com/api",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Files",
+      "item": [
+        {
+          "name": "List Files",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/list?limit=100&offset=0",
+              "host": ["{{baseUrl}}"],
+              "path": ["list"],
+              "query": [
+                {
+                  "key": "maxduration",
+                  "value": "300",
+                  "description": "Maximum duration in seconds",
+                  "disabled": true
+                },
+                {
+                  "key": "minduration",
+                  "value": "10",
+                  "description": "Minimum duration in seconds",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "100",
+                  "description": "Max number of results (default: 100)"
+                },
+                {
+                  "key": "offset",
+                  "value": "0",
+                  "description": "Offset for pagination (default: 0)"
+                }
+              ]
+            },
+            "description": "Get a list of stored files with optional filtering by duration and pagination."
+          },
+          "response": []
+        },
+        {
+          "name": "Get File by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/files/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["files", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "your-file-id-here",
+                  "description": "The file/submission ID"
+                }
+              ]
+            },
+            "description": "Get metadata for a specific file by ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Download File by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/download?id=your-file-id-here",
+              "host": ["{{baseUrl}}"],
+              "path": ["download"],
+              "query": [
+                {
+                  "key": "id",
+                  "value": "your-file-id-here",
+                  "description": "File ID to download"
+                },
+                {
+                  "key": "name",
+                  "value": "filename.wav",
+                  "description": "Filename to download (alternative to id)",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Download the content of a stored file. Provide either 'id' or 'name' query parameter."
+          },
+          "response": []
+        },
+        {
+          "name": "Get File Info (Transcript & Summary)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/info?id=your-file-id-here",
+              "host": ["{{baseUrl}}"],
+              "path": ["info"],
+              "query": [
+                {
+                  "key": "id",
+                  "value": "your-file-id-here",
+                  "description": "Submission ID (required)"
+                }
+              ]
+            },
+            "description": "Get transcript and AI summary for a processed audio file. Includes topics, intents, sentiment analysis, and stream session data if applicable."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Submissions",
+      "item": [
+        {
+          "name": "Get Submission Details",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/submissions/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["submissions", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "your-submission-id-here",
+                  "description": "The submission ID"
+                }
+              ]
+            },
+            "description": "Get full submission details including all associated jobs."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Jobs",
+      "item": [
+        {
+          "name": "List Recent Jobs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/jobs?limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["jobs"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Max number of jobs to return (default: 50)"
+                }
+              ]
+            },
+            "description": "Get recent jobs with queue status information."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Job by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/jobs/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["jobs", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "1",
+                  "description": "The job ID (numeric)"
+                }
+              ]
+            },
+            "description": "Get a specific job by its numeric ID."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

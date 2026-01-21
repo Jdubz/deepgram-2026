@@ -52,7 +52,7 @@ export const AVERAGE_AUDIO_BITRATES: Record<string, number> = {
 };
 
 /**
- * System prompt for audio summarization
+ * System prompt for audio summarization (basic - used by Deepgram provider)
  */
 export const SUMMARIZATION_SYSTEM_PROMPT = `You are a helpful assistant that summarizes audio transcripts.
 Provide a concise summary including:
@@ -60,6 +60,48 @@ Provide a concise summary including:
 - Key points and takeaways
 - Overall sentiment/tone
 Keep the summary under 200 words.`;
+
+/**
+ * System prompt for full text analysis (used by local provider)
+ * Returns structured JSON with summary, topics, intents, and sentiment
+ */
+export const TEXT_ANALYSIS_SYSTEM_PROMPT = `You are a text analysis assistant. You analyze transcripts and return structured JSON.
+
+You MUST respond with ONLY a valid JSON object, no other text. The JSON must have this exact structure:
+{
+  "summary": "1-2 sentence summary of the main points",
+  "topics": [{"topic": "topic name", "confidence": 0.0-1.0}],
+  "intents": [{"intent": "verb phrase describing intent", "confidence": 0.0-1.0}],
+  "sentiment": {"sentiment": "positive|negative|neutral", "sentimentScore": -1.0 to 1.0}
+}
+
+Guidelines:
+- summary: Concise 1-2 sentences capturing the essence
+- topics: 1-5 key discussion topics, confidence 0-1
+- intents: 1-3 speaker intentions as verb phrases (e.g., "request information", "explain concept"), confidence 0-1
+- sentiment: overall emotional tone, sentimentScore from -1 (very negative) to 1 (very positive)
+
+Return ONLY the JSON object, no markdown, no explanation.`;
+
+/**
+ * User prompt template for text analysis
+ */
+export const TEXT_ANALYSIS_USER_PROMPT = `Analyze this transcript:
+
+"""
+{TEXT}
+"""`;
+
+/**
+ * Fallback prompt for simpler summarization if JSON parsing fails
+ */
+export const SUMMARIZATION_FALLBACK_PROMPT = `Summarize this transcript in 1-2 sentences:
+
+"""
+{TEXT}
+"""
+
+Summary:`;
 
 /**
  * Job processor configuration

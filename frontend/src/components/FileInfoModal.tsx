@@ -1,4 +1,33 @@
 import { formatDuration, formatSize } from '../utils/format'
+import { ChunkSentiment } from './ChunkAnnotation'
+
+// Stream chunk with analysis data
+export interface StreamChunkInfo {
+  id: number
+  index: number
+  speaker: number | null
+  transcript: string
+  startTimeMs: number
+  endTimeMs: number
+  confidence: number | null
+  analysisStatus: 'pending' | 'processing' | 'completed' | 'skipped'
+  topics: Array<{ topic: string; confidence: number }> | null
+  intents: Array<{ intent: string; confidence: number }> | null
+  summary: string | null
+  sentiment: ChunkSentiment | null
+}
+
+// Stream session data
+export interface StreamSessionInfo {
+  id: string
+  durationMs: number
+  chunkCount: number
+  speakers: number[]
+  status: 'active' | 'ended'
+  startedAt: string
+  endedAt: string | null
+  chunks: StreamChunkInfo[]
+}
 
 export interface FileInfo {
   id: string
@@ -19,6 +48,12 @@ export interface FileInfo {
   summaryProvider?: string | null
   summaryModel?: string | null
   summaryConfidence?: number | null
+  // Text intelligence analysis (from Deepgram)
+  topics?: Array<{ topic: string; confidence: number }> | null
+  intents?: Array<{ intent: string; confidence: number }> | null
+  sentiment?: ChunkSentiment | null
+  // Stream session data (for recordings from live streams)
+  streamSession?: StreamSessionInfo | null
 }
 
 // Visual confidence indicator component
@@ -212,6 +247,224 @@ export function FileInfoModal({ fileInfo, onClose, onDownload }: FileInfoModalPr
             </p>
           )}
         </div>
+
+        {/* Text Intelligence Analysis (Deepgram only) */}
+        {fileInfo.summaryStatus === 'completed' && (fileInfo.topics || fileInfo.intents || fileInfo.sentiment) && (
+          <div style={{ marginTop: '16px' }}>
+            <strong>Text Analysis</strong>
+
+            {/* Sentiment */}
+            {fileInfo.sentiment && (
+              <div style={{ marginTop: '8px' }}>
+                <span style={{ fontSize: '13px', color: '#666' }}>Sentiment: </span>
+                <span
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    padding: '4px 10px',
+                    background:
+                      fileInfo.sentiment.sentiment === 'positive'
+                        ? '#e8f5e9'
+                        : fileInfo.sentiment.sentiment === 'negative'
+                        ? '#ffebee'
+                        : '#f5f5f5',
+                    color:
+                      fileInfo.sentiment.sentiment === 'positive'
+                        ? '#2e7d32'
+                        : fileInfo.sentiment.sentiment === 'negative'
+                        ? '#c62828'
+                        : '#666',
+                    borderRadius: '12px',
+                    fontSize: '13px',
+                    fontWeight: 500,
+                  }}
+                  title={`Score: ${fileInfo.sentiment.sentimentScore.toFixed(2)}`}
+                >
+                  {fileInfo.sentiment.sentiment === 'positive'
+                    ? '+'
+                    : fileInfo.sentiment.sentiment === 'negative'
+                    ? '-'
+                    : '~'}
+                  {' '}
+                  {fileInfo.sentiment.sentiment}
+                </span>
+              </div>
+            )}
+
+            {/* Topics */}
+            {fileInfo.topics && fileInfo.topics.length > 0 && (
+              <div style={{ marginTop: '8px' }}>
+                <span style={{ fontSize: '13px', color: '#666' }}>Topics: </span>
+                <div style={{ display: 'inline-flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' }}>
+                  {fileInfo.topics.slice(0, 5).map((topic, index) => (
+                    <span
+                      key={topic.topic}
+                      style={{
+                        display: 'inline-block',
+                        padding: '3px 8px',
+                        background: ['#e3f2fd', '#f3e5f5', '#e8f5e9', '#fff3e0', '#fce4ec'][index % 5],
+                        color: ['#1565c0', '#7b1fa2', '#2e7d32', '#ef6c00', '#c2185b'][index % 5],
+                        borderRadius: '12px',
+                        fontSize: '12px',
+                        fontWeight: 500,
+                      }}
+                      title={`Confidence: ${Math.round(topic.confidence * 100)}%`}
+                    >
+                      {topic.topic}
+                    </span>
+                  ))}
+                  {fileInfo.topics.length > 5 && (
+                    <span style={{ fontSize: '12px', color: '#999' }}>
+                      +{fileInfo.topics.length - 5} more
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Intents */}
+            {fileInfo.intents && fileInfo.intents.length > 0 && (
+              <div style={{ marginTop: '8px' }}>
+                <span style={{ fontSize: '13px', color: '#666' }}>Intents: </span>
+                <div style={{ display: 'inline-flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' }}>
+                  {fileInfo.intents.slice(0, 4).map((intent) => (
+                    <span
+                      key={intent.intent}
+                      style={{
+                        display: 'inline-block',
+                        padding: '3px 8px',
+                        background: '#f5f5f5',
+                        color: '#666',
+                        borderRadius: '4px',
+                        fontSize: '12px',
+                      }}
+                      title={`Confidence: ${Math.round(intent.confidence * 100)}%`}
+                    >
+                      {intent.intent}
+                    </span>
+                  ))}
+                  {fileInfo.intents.length > 4 && (
+                    <span style={{ fontSize: '12px', color: '#999' }}>
+                      +{fileInfo.intents.length - 4} more
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Stream Session Chunks (for recordings from live streams) */}
+        {fileInfo.streamSession && fileInfo.streamSession.chunks.length > 0 && (
+          <div style={{ marginTop: '16px' }}>
+            <strong>Stream Segments ({fileInfo.streamSession.chunks.length})</strong>
+            <div
+              style={{
+                marginTop: '8px',
+                maxHeight: '300px',
+                overflowY: 'auto',
+                border: '1px solid #e0e0e0',
+                borderRadius: '8px',
+              }}
+            >
+              {fileInfo.streamSession.chunks.map((chunk) => {
+                const speakerColors = [
+                  { bg: '#e3f2fd', border: '#1976d2' },
+                  { bg: '#f3e5f5', border: '#7b1fa2' },
+                  { bg: '#e8f5e9', border: '#388e3c' },
+                  { bg: '#fff3e0', border: '#f57c00' },
+                ]
+                const colorIndex = chunk.speaker !== null ? chunk.speaker % speakerColors.length : 0
+                const colors = speakerColors[colorIndex]
+
+                return (
+                  <div
+                    key={chunk.id}
+                    style={{
+                      padding: '12px',
+                      borderBottom: '1px solid #f0f0f0',
+                      background: colors.bg,
+                      borderLeft: `3px solid ${colors.border}`,
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                      <span style={{ fontSize: '12px', fontWeight: 600, color: '#666' }}>
+                        {chunk.speaker !== null ? `Speaker ${chunk.speaker + 1}` : 'Unknown'}
+                      </span>
+                      <span style={{ fontSize: '11px', color: '#999' }}>
+                        {Math.round(chunk.startTimeMs / 1000)}s - {Math.round(chunk.endTimeMs / 1000)}s
+                      </span>
+                    </div>
+                    <p style={{ margin: '0 0 8px 0', fontSize: '14px', lineHeight: 1.4 }}>
+                      {chunk.transcript}
+                    </p>
+
+                    {/* Chunk Analysis */}
+                    {chunk.analysisStatus === 'completed' && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
+                        {/* Sentiment */}
+                        {chunk.sentiment && (
+                          <span
+                            style={{
+                              padding: '2px 6px',
+                              background: chunk.sentiment.sentiment === 'positive' ? '#c8e6c9' : chunk.sentiment.sentiment === 'negative' ? '#ffcdd2' : '#e0e0e0',
+                              color: chunk.sentiment.sentiment === 'positive' ? '#2e7d32' : chunk.sentiment.sentiment === 'negative' ? '#c62828' : '#666',
+                              borderRadius: '4px',
+                              fontSize: '10px',
+                              fontWeight: 500,
+                            }}
+                          >
+                            {chunk.sentiment.sentiment}
+                          </span>
+                        )}
+                        {/* Topics */}
+                        {chunk.topics && chunk.topics.slice(0, 2).map((topic) => (
+                          <span
+                            key={topic.topic}
+                            style={{
+                              padding: '2px 6px',
+                              background: '#e3f2fd',
+                              color: '#1565c0',
+                              borderRadius: '10px',
+                              fontSize: '10px',
+                            }}
+                          >
+                            {topic.topic}
+                          </span>
+                        ))}
+                        {/* Intents */}
+                        {chunk.intents && chunk.intents.slice(0, 1).map((intent) => (
+                          <span
+                            key={intent.intent}
+                            style={{
+                              padding: '2px 6px',
+                              background: '#f5f5f5',
+                              color: '#666',
+                              borderRadius: '4px',
+                              fontSize: '10px',
+                            }}
+                          >
+                            {intent.intent}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {chunk.analysisStatus === 'pending' && (
+                      <span style={{ fontSize: '10px', color: '#ff9800', fontStyle: 'italic' }}>Analysis pending...</span>
+                    )}
+                    {chunk.analysisStatus === 'processing' && (
+                      <span style={{ fontSize: '10px', color: '#2196f3', fontStyle: 'italic' }}>Analyzing...</span>
+                    )}
+                    {chunk.analysisStatus === 'skipped' && (
+                      <span style={{ fontSize: '10px', color: '#999', fontStyle: 'italic' }}>Analysis skipped (too short)</span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
 
         <div style={{ marginTop: '16px', display: 'flex', gap: '8px' }}>
           <button

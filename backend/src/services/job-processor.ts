@@ -249,15 +249,8 @@ class JobProcessorService {
     jobEventHub.emitJobCompleted(job.id, result.processingTimeMs, result.confidence ?? null);
     jobEventHub.emitQueueStatus();
 
-    // Update submission with transcript
+    // Handle submission status and auto-summarize
     if (job.audio_file_id) {
-      inferenceQueue.updateSubmissionTranscript(
-        job.audio_file_id,
-        result.text,
-        job.id,
-        result.confidence
-      );
-
       // Check if auto-summarize is requested
       const metadata = job.metadata ? JSON.parse(job.metadata) : {};
       if (metadata.autoSummarize && result.text.trim()) {
@@ -276,7 +269,7 @@ class JobProcessorService {
           jobEventHub.emitJobCreated(summarizeJob);
           jobEventHub.emitQueueStatus();
         }
-      } else if (!metadata.autoSummarize) {
+      } else {
         // No auto-summarize, mark submission as completed
         inferenceQueue.updateSubmissionStatus(job.audio_file_id, "completed");
       }
@@ -286,6 +279,7 @@ class JobProcessorService {
   /**
    * Process a summarization job
    * Uses streaming with heartbeat for LocalAI to detect stuck jobs
+   * For Deepgram, uses full text intelligence analysis (topics, intents, sentiment)
    */
   private async processSummarizeJob(job: Job): Promise<void> {
     if (!job.input_text) {
@@ -297,9 +291,44 @@ class JobProcessorService {
       `[JobProcessor] Summarizing with ${provider.name} (${job.input_text.length} chars)...`
     );
 
-    let result;
+    // For Deepgram, use full text intelligence analysis
+    if (job.provider === Provider.DEEPGRAM) {
+      const analysisResult = await deepgram.analyzeText(job.input_text, {
+        topics: true,
+        intents: true,
+        summarize: true,
+        sentiment: true,
+      });
+
+      console.log(
+        `[JobProcessor] Analysis complete (${analysisResult.processingTimeMs}ms): ` +
+        `${analysisResult.topics.length} topics, ${analysisResult.intents.length} intents, ` +
+        `sentiment: ${analysisResult.sentiment?.sentiment || "none"}`
+      );
+
+      // Mark job as completed with analysis results
+      inferenceQueue.completeJob(
+        job.id,
+        analysisResult.summary,
+        "deepgram-text-intelligence",
+        analysisResult.processingTimeMs,
+        undefined,
+        analysisResult.rawResponse
+      );
+
+      // Emit job completed event
+      jobEventHub.emitJobCompleted(job.id, analysisResult.processingTimeMs, null);
+      jobEventHub.emitQueueStatus();
+
+      // Mark submission as completed (results are in the job)
+      if (job.audio_file_id) {
+        inferenceQueue.updateSubmissionStatus(job.audio_file_id, "completed");
+      }
+      return;
+    }
 
     // Use streaming with heartbeat for LocalAI provider
+    let result;
     if (job.provider === Provider.LOCAL && provider instanceof LocalAIService) {
       // Verify model is loaded before starting
       const modelLoaded = await provider.isModelLoaded(provider.getConfig().llmModel);
@@ -325,7 +354,7 @@ class JobProcessorService {
         }
       );
     } else {
-      // Use standard summarize for other providers (Deepgram)
+      // Use standard summarize for other providers
       result = await provider.summarize(job.input_text);
     }
 
@@ -347,14 +376,8 @@ class JobProcessorService {
     jobEventHub.emitJobCompleted(job.id, result.processingTimeMs, result.confidence ?? null);
     jobEventHub.emitQueueStatus();
 
-    // Update submission with summary and mark as completed
+    // Mark submission as completed (results are in the job)
     if (job.audio_file_id) {
-      inferenceQueue.updateSubmissionSummary(
-        job.audio_file_id,
-        result.text,
-        job.id,
-        result.confidence
-      );
       inferenceQueue.updateSubmissionStatus(job.audio_file_id, "completed");
     }
   }
@@ -388,21 +411,16 @@ class JobProcessorService {
       topics: true,
       intents: true,
       summarize: true,
+      sentiment: true,
     });
 
     console.log(
       `[JobProcessor] Chunk analysis complete (${result.processingTimeMs}ms): ` +
-      `${result.topics.length} topics, ${result.intents.length} intents`
+      `${result.topics.length} topics, ${result.intents.length} intents, ` +
+      `sentiment: ${result.sentiment?.sentiment || "none"}`
     );
 
-    // Update chunk with analysis results
-    inferenceQueue.updateChunkAnalysis(chunkId, {
-      topics: result.topics,
-      intents: result.intents,
-      summary: result.summary,
-    });
-
-    // Mark job as completed
+    // Mark job as completed (results are stored in job's output_text and raw_response)
     inferenceQueue.completeJob(
       job.id,
       JSON.stringify({ topics: result.topics, intents: result.intents, summary: result.summary }),
@@ -421,6 +439,7 @@ class JobProcessorService {
       topics: result.topics,
       intents: result.intents,
       summary: result.summary,
+      sentiment: result.sentiment,
     });
   }
 

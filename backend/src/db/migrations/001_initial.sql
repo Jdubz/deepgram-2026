@@ -4,7 +4,7 @@
 -- Jobs table: stores inference jobs (transcribe/summarize)
 CREATE TABLE IF NOT EXISTS jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  job_type TEXT NOT NULL CHECK(job_type IN ('transcribe', 'summarize')),
+  job_type TEXT NOT NULL CHECK(job_type IN ('transcribe', 'summarize', 'analyze_chunk')),
   status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
   provider TEXT NOT NULL DEFAULT 'local' CHECK(provider IN ('local', 'deepgram')),
   input_file_path TEXT,
@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS audio_submissions (
   summary TEXT,
   summary_job_id INTEGER REFERENCES jobs(id),
   summarized_at TEXT,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'transcribing', 'summarizing', 'completed', 'failed')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'streaming', 'transcribing', 'summarizing', 'completed', 'failed')),
   error_message TEXT,
   metadata TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),

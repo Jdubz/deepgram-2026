@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import {
   UploadSection,
   RecordSection,
@@ -8,11 +8,9 @@ import {
   StreamBroadcast,
   StreamViewer,
   type AudioFile,
-  type Job,
-  type QueueStatus,
   type FileInfo,
 } from './components'
-import { useJobEvents } from './hooks/useJobEvents'
+import { useProvider, useJobQueue } from './contexts'
 
 type Tab = 'files' | 'watch'
 
@@ -26,10 +24,13 @@ function App() {
   const [fileInfo, setFileInfo] = useState<FileInfo | null>(null)
   const [maxDuration, setMaxDuration] = useState('')
   const [minConfidence, setMinConfidence] = useState('')
-  const [jobs, setJobs] = useState<Job[]>([])
-  const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null)
   const [queueExpanded, setQueueExpanded] = useState(false)
-  const [provider, setProvider] = useState<'local' | 'deepgram'>('local')
+
+  // Get provider from context
+  const { provider } = useProvider()
+
+  // Get job state from context
+  const { jobs, queueStatus, isConnected } = useJobQueue()
 
   const fetchFiles = async () => {
     try {
@@ -45,42 +46,6 @@ function App() {
       console.error('Failed to fetch files:', err)
     }
   }
-
-  // Helper to update a job in the list
-  const updateJob = useCallback((jobId: number, updates: Partial<Job>) => {
-    setJobs((prev) =>
-      prev.map((job) => (job.id === jobId ? { ...job, ...updates } : job))
-    )
-  }, [])
-
-  // WebSocket hook for real-time job updates
-  const { isConnected } = useJobEvents({
-    onInitialState: (initialJobs, status) => {
-      setJobs(initialJobs)
-      setQueueStatus(status)
-    },
-    onJobCreated: (job) => {
-      setJobs((prev) => [job, ...prev.filter((j) => j.id !== job.id)])
-    },
-    onJobClaimed: (jobId, startedAt) => {
-      updateJob(jobId, { status: 'processing', started_at: startedAt })
-    },
-    onJobCompleted: (jobId, processingTimeMs, completedAt) => {
-      updateJob(jobId, {
-        status: 'completed',
-        processing_time_ms: processingTimeMs,
-        completed_at: completedAt,
-      })
-    },
-    onJobFailed: (jobId, errorMessage) => {
-      updateJob(jobId, {
-        status: 'failed',
-        error_message: errorMessage,
-        completed_at: new Date().toISOString(),
-      })
-    },
-    onQueueStatus: setQueueStatus,
-  })
 
   useEffect(() => {
     fetchFiles()
@@ -160,16 +125,12 @@ function App() {
       {/* Files Tab */}
       <div style={{ display: activeTab === 'files' ? 'block' : 'none' }}>
         <UploadSection
-          provider={provider}
-          onProviderChange={setProvider}
           onUpload={handleUpload}
           uploading={uploading}
           message={message}
         />
 
         <RecordSection
-          provider={provider}
-          onProviderChange={setProvider}
           onUploadSuccess={() => {
             fetchFiles()
             // Jobs update automatically via WebSocket

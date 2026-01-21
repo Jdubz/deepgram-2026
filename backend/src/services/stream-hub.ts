@@ -14,6 +14,7 @@ import path from "path";
 import { randomUUID } from "crypto";
 import { DeepgramStream, TranscriptSegment, UtteranceEndEvent } from "./deepgram-stream.js";
 import { inferenceQueue } from "./inference-queue.js";
+import { jobEventHub } from "./job-event-hub.js";
 
 // Message types from clients
 interface AuthMessage {
@@ -74,6 +75,15 @@ interface ChunkCreatedMessage {
   };
 }
 
+interface ChunkSentiment {
+  sentiment: "positive" | "negative" | "neutral";
+  sentimentScore: number;
+  average: {
+    sentiment: "positive" | "negative" | "neutral";
+    sentimentScore: number;
+  };
+}
+
 interface ChunkAnalyzedMessage {
   type: "chunk_analyzed";
   sessionId: string;
@@ -81,6 +91,7 @@ interface ChunkAnalyzedMessage {
   topics: Array<{ topic: string; confidence: number }>;
   intents: Array<{ intent: string; confidence: number }>;
   summary: string;
+  sentiment: ChunkSentiment | null;
 }
 
 interface StatusMessage {
@@ -557,12 +568,21 @@ export class StreamHub {
           sessionId: this.currentSessionId,
         });
         console.log(`[StreamHub] Queued analysis job ${jobId} for chunk ${chunk.id}`);
+
+        // Emit events to notify job processor
+        const job = inferenceQueue.getJob(jobId);
+        if (job) {
+          jobEventHub.emitJobCreated(job);
+          jobEventHub.emitQueueStatus();
+        }
       } catch (err) {
-        console.error(`[StreamHub] Failed to create analysis job:`, err);
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[StreamHub] Failed to create analysis job for chunk ${chunk.id}:`, errorMsg);
+        // Chunk will have no analysis_job_id - status derived as skipped/failed
       }
     } else {
-      // Mark as skipped if too short
-      inferenceQueue.updateChunkAnalysisStatus(chunk.id, "skipped");
+      // Chunk too short for analysis - no analysis_job_id means skipped
+      console.log(`[StreamHub] Chunk ${chunk.id} too short for analysis (${chunk.word_count} words)`);
     }
 
     // Reset accumulator for next utterance
@@ -676,13 +696,27 @@ export class StreamHub {
 
       // Queue analysis job if chunk has enough words
       if (chunk.word_count >= MIN_WORDS_FOR_ANALYSIS) {
-        const jobId = inferenceQueue.createAnalyzeChunkJob({
-          chunkId: chunk.id,
-          sessionId: this.currentSessionId,
-        });
-        console.log(`[StreamHub] Queued analysis job ${jobId} for final chunk ${chunk.id}`);
+        try {
+          const jobId = inferenceQueue.createAnalyzeChunkJob({
+            chunkId: chunk.id,
+            sessionId: this.currentSessionId,
+          });
+          console.log(`[StreamHub] Queued analysis job ${jobId} for final chunk ${chunk.id}`);
+
+          // Emit events to notify job processor
+          const job = inferenceQueue.getJob(jobId);
+          if (job) {
+            jobEventHub.emitJobCreated(job);
+            jobEventHub.emitQueueStatus();
+          }
+        } catch (jobErr) {
+          const errorMsg = jobErr instanceof Error ? jobErr.message : String(jobErr);
+          console.error(`[StreamHub] Failed to create analysis job for final chunk ${chunk.id}:`, errorMsg);
+          // Chunk will have no analysis_job_id - status derived as skipped/failed
+        }
       } else {
-        inferenceQueue.updateChunkAnalysisStatus(chunk.id, "skipped");
+        // Final chunk too short for analysis
+        console.log(`[StreamHub] Final chunk ${chunk.id} too short for analysis`);
       }
     } catch (err) {
       console.error("[StreamHub] Failed to create final chunk:", err);
@@ -705,24 +739,15 @@ export class StreamHub {
       ? Date.now() - this.sessionStartTime
       : 0;
 
-    // Update submission with file size and combined transcript
+    // Update submission with file size (transcript is derived from chunks when needed)
     if (this.currentSubmissionId && this.audioFilePath) {
       try {
         const stats = fs.statSync(this.audioFilePath);
 
-        // Build combined transcript from all chunks
-        let combinedTranscript: string | undefined;
-        if (this.currentSessionId) {
-          const chunks = inferenceQueue.getSessionChunks(this.currentSessionId);
-          if (chunks.length > 0) {
-            combinedTranscript = chunks.map((c) => c.transcript).join(" ");
-          }
-        }
-
         inferenceQueue.finalizeStreamSubmission(
           this.currentSubmissionId,
           stats.size,
-          combinedTranscript
+          durationMs / 1000 // Convert to seconds
         );
 
         console.log(
@@ -812,10 +837,25 @@ export class StreamHub {
 
   private broadcastToViewers(message: ServerMessage): void {
     const messageStr = JSON.stringify(message);
+    const failedViewers: WebSocket[] = [];
+
     for (const viewer of this.viewers) {
       if (viewer.readyState === WebSocket.OPEN) {
-        viewer.send(messageStr);
+        try {
+          viewer.send(messageStr);
+        } catch (err) {
+          console.warn("[StreamHub] Failed to send to viewer, removing:", err);
+          failedViewers.push(viewer);
+        }
+      } else if (viewer.readyState === WebSocket.CLOSED || viewer.readyState === WebSocket.CLOSING) {
+        // Clean up dead connections
+        failedViewers.push(viewer);
       }
+    }
+
+    // Remove failed/dead viewers from set
+    for (const viewer of failedViewers) {
+      this.viewers.delete(viewer);
     }
   }
 
@@ -866,6 +906,7 @@ export class StreamHub {
       topics: Array<{ topic: string; confidence: number }>;
       intents: Array<{ intent: string; confidence: number }>;
       summary: string;
+      sentiment: ChunkSentiment | null;
     }
   ): void {
     const message: ChunkAnalyzedMessage = {
@@ -875,6 +916,7 @@ export class StreamHub {
       topics: results.topics,
       intents: results.intents,
       summary: results.summary,
+      sentiment: results.sentiment,
     };
 
     // Broadcast to broadcaster if this is the active session

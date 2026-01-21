@@ -1,20 +1,18 @@
 import { useRef, useState } from 'react'
+import { useProvider } from '../contexts'
 
 interface UploadSectionProps {
-  provider: 'local' | 'deepgram'
-  onProviderChange: (provider: 'local' | 'deepgram') => void
   onUpload: (file: File) => Promise<void>
   uploading: boolean
   message: string
 }
 
 export function UploadSection({
-  provider,
-  onProviderChange,
   onUpload,
   uploading,
   message,
 }: UploadSectionProps) {
+  const { provider, setProvider } = useProvider()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
 
@@ -60,7 +58,7 @@ export function UploadSection({
         />
         <select
           value={provider}
-          onChange={(e) => onProviderChange(e.target.value as 'local' | 'deepgram')}
+          onChange={(e) => setProvider(e.target.value as 'local' | 'deepgram')}
           style={{ padding: '8px 12px' }}
           disabled={uploading}
         >

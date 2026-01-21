@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useWebSocket } from '../hooks/useWebSocket'
-import { ChunkAnnotation, ChunkAnnotationData, ChunkAnnotationSkeleton } from './ChunkAnnotation'
+import { ChunkAnnotation, ChunkAnnotationData, ChunkAnnotationSkeleton, ChunkSentiment } from './ChunkAnnotation'
 
 // Speaker colors for visual distinction
 const SPEAKER_COLORS = [
@@ -67,6 +67,7 @@ interface ServerMessage {
   topics?: Array<{ topic: string; confidence: number }>
   intents?: Array<{ intent: string; confidence: number }>
   summary?: string
+  sentiment?: ChunkSentiment
 }
 
 interface StreamViewerProps {
@@ -188,6 +189,7 @@ export function StreamViewer({ isActive = true }: StreamViewerProps) {
                       topics: message.topics!,
                       intents: message.intents!,
                       summary: message.summary || '',
+                      sentiment: message.sentiment || null,
                     },
                   }
                 : chunk
@@ -219,6 +221,10 @@ export function StreamViewer({ isActive = true }: StreamViewerProps) {
       case 'error':
         setError(message.message || 'Server error')
         break
+
+      default:
+        // Log unknown message types for debugging
+        console.debug('[StreamViewer] Unhandled message type:', message.type)
     }
   }, [])
 

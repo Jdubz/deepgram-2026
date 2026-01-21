@@ -24,10 +24,20 @@ export interface DeepgramConfig {
   timeoutMs: number;
 }
 
+export interface SentimentResult {
+  sentiment: "positive" | "negative" | "neutral";
+  sentimentScore: number; // -1 to 1
+  average: {
+    sentiment: "positive" | "negative" | "neutral";
+    sentimentScore: number;
+  };
+}
+
 export interface TextAnalysisResult {
   topics: Array<{ topic: string; confidence: number }>;
   intents: Array<{ intent: string; confidence: number }>;
   summary: string;
+  sentiment: SentimentResult | null;
   processingTimeMs: number;
   rawResponse: unknown;
 }
@@ -218,7 +228,8 @@ class DeepgramService implements InferenceProvider {
       topics?: boolean;
       intents?: boolean;
       summarize?: boolean;
-    } = { topics: true, intents: true, summarize: true }
+      sentiment?: boolean;
+    } = { topics: true, intents: true, summarize: true, sentiment: true }
   ): Promise<TextAnalysisResult> {
     if (!this.config.apiKey) {
       throw new Error("Deepgram API key not configured. Set DEEPGRAM_API_KEY environment variable.");
@@ -242,6 +253,9 @@ class DeepgramService implements InferenceProvider {
       }
       if (options.summarize !== false) {
         params.append("summarize", "v2");
+      }
+      if (options.sentiment !== false) {
+        params.append("sentiment", "true");
       }
 
       const response = await fetch(
@@ -285,6 +299,17 @@ class DeepgramService implements InferenceProvider {
               }>;
             }>;
           };
+          sentiments?: {
+            segments?: Array<{
+              text?: string;
+              sentiment?: "positive" | "negative" | "neutral";
+              sentiment_score?: number;
+            }>;
+            average?: {
+              sentiment?: "positive" | "negative" | "neutral";
+              sentiment_score?: number;
+            };
+          };
           summary?: {
             text?: string;
           };
@@ -326,10 +351,29 @@ class DeepgramService implements InferenceProvider {
 
       const summary = dgResponse.results?.summary?.text || "";
 
+      // Parse sentiment - use the first segment or average
+      let sentiment: SentimentResult | null = null;
+      const sentimentData = dgResponse.results?.sentiments;
+      if (sentimentData) {
+        const firstSegment = sentimentData.segments?.[0];
+        const avg = sentimentData.average;
+        if (firstSegment || avg) {
+          sentiment = {
+            sentiment: firstSegment?.sentiment || avg?.sentiment || "neutral",
+            sentimentScore: firstSegment?.sentiment_score ?? avg?.sentiment_score ?? 0,
+            average: {
+              sentiment: avg?.sentiment || firstSegment?.sentiment || "neutral",
+              sentimentScore: avg?.sentiment_score ?? firstSegment?.sentiment_score ?? 0,
+            },
+          };
+        }
+      }
+
       return {
         topics,
         intents,
         summary,
+        sentiment,
         processingTimeMs: Date.now() - startTime,
         rawResponse,
       };

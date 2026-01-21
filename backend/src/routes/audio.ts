@@ -127,13 +127,41 @@ router.post(
       const displayName = inferenceQueue.generateUniqueDisplayName(req.file.originalname);
 
       // Extract duration from audio file for filtering support
+      // Also validates that file content matches declared type (magic byte check)
       const fileContent = fs.readFileSync(filePath);
       const audioResult = await audioService.validateAndExtract(
         id,
         fileContent,
         req.file.originalname,
-        customMetadata
+        customMetadata,
+        req.file.mimetype
       );
+
+      // Handle validation errors with appropriate 400 responses
+      if (!audioResult.valid) {
+        // Clean up the uploaded file since validation failed
+        fs.unlinkSync(filePath);
+
+        const errorResponse: {
+          error: string;
+          errorType?: string;
+          detectedFormat?: { codec: string; mimeTypes: string[] };
+        } = {
+          error: audioResult.error || "Invalid audio file",
+          errorType: audioResult.errorType,
+        };
+
+        // Include detected format info for mismatch errors
+        if (audioResult.detectedFormat) {
+          errorResponse.detectedFormat = {
+            codec: audioResult.detectedFormat.codec,
+            mimeTypes: audioResult.detectedFormat.mimeTypes,
+          };
+        }
+
+        res.status(400).json(errorResponse);
+        return;
+      }
 
       // Create submission in queue with auto-processing
       const submission = inferenceQueue.createSubmission({
@@ -188,10 +216,10 @@ router.post(
 router.get("/list", async (req: Request, res: Response): Promise<void> => {
   try {
     // Validate query parameters
+    // Note: min_confidence filter removed - confidence is now in jobs table
     const query: ListFilesQuery = {
       maxduration: parseNumericParam(req.query.maxduration, "maxduration", { min: 0 }),
       minduration: parseNumericParam(req.query.minduration, "minduration", { min: 0 }),
-      min_confidence: parseNumericParam(req.query.min_confidence, "min_confidence", { min: 0, max: 1 }),
       limit: parseNumericParam(req.query.limit, "limit", { min: 1, max: API_CONFIG.MAX_LIST_LIMIT })
         ?? API_CONFIG.DEFAULT_LIST_LIMIT,
       offset: parseNumericParam(req.query.offset, "offset", { min: 0 }) ?? 0,
@@ -201,13 +229,11 @@ router.get("/list", async (req: Request, res: Response): Promise<void> => {
     const { submissions, total } = inferenceQueue.getSubmissionsFiltered({
       maxDuration: query.maxduration,
       minDuration: query.minduration,
-      minConfidence: query.min_confidence,
       limit: query.limit,
       offset: query.offset,
     });
 
     // Map submissions to the expected response format
-    // Note: status is not included since files only exist if successfully uploaded
     const files = submissions.map((s) => ({
       id: s.id,
       filename: s.original_filename || s.filename,
@@ -215,8 +241,7 @@ router.get("/list", async (req: Request, res: Response): Promise<void> => {
       size: s.file_size || 0,
       mimeType: s.mime_type || "audio/unknown",
       uploadedAt: s.created_at,
-      transcriptConfidence: s.transcript_confidence,
-      summaryConfidence: s.summary_confidence,
+      status: s.status,
     }));
 
     const response = {
@@ -300,6 +325,7 @@ router.get("/download", async (req: Request, res: Response): Promise<void> => {
  *
  * Get transcript and summary for a processed audio file.
  * If the file was created from a stream, includes session and chunk data.
+ * Uses JOIN queries to get results from jobs table (single source of truth).
  *
  * Query parameters:
  *   - id: Submission ID (required)
@@ -318,29 +344,22 @@ router.get("/info", async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    // Get submission from queue
-    const submission = inferenceQueue.getSubmission(id as string);
+    // Get submission with its related jobs (JOIN query)
+    const submissionWithJobs = inferenceQueue.getSubmissionWithJobs(id as string);
 
-    if (!submission) {
+    if (!submissionWithJobs) {
       res.status(404).json({ error: "Submission not found" });
       return;
     }
 
-    // Get job details for status and provider/model info
-    const transcriptJob = submission.transcript_job_id
-      ? inferenceQueue.getJob(submission.transcript_job_id)
-      : null;
-    const summaryJob = submission.summary_job_id
-      ? inferenceQueue.getJob(submission.summary_job_id)
-      : null;
+    const { transcriptJob, summarizeJob, ...submission } = submissionWithJobs;
 
-    // Determine transcript status
-    // Check submission-level failure first (e.g., failed before job was created)
+    // Determine transcript status from job
     let transcriptStatus: "pending" | "completed" | "failed" = "pending";
     let transcriptError: string | null = null;
 
     if (submission.status === "failed" && !transcriptJob) {
-      // Submission failed before transcription job was created or started
+      // Submission failed before transcription job was created
       transcriptStatus = "failed";
       transcriptError = submission.error_message || "Unknown error";
     } else if (transcriptJob) {
@@ -350,42 +369,42 @@ router.get("/info", async (req: Request, res: Response): Promise<void> => {
         transcriptStatus = "failed";
         transcriptError = transcriptJob.error_message || "Unknown error";
       }
-      // "pending" and "processing" job statuses both show as "pending" in UI
     }
 
-    // Determine summary status
+    // Determine summary status from job
     let summaryStatus: "pending" | "completed" | "failed" = "pending";
     let summaryError: string | null = null;
 
     if (submission.status === "failed" && transcriptStatus === "failed") {
-      // If transcription failed, summary will never happen
       summaryStatus = "failed";
       summaryError = "Transcription failed";
-    } else if (summaryJob) {
-      if (summaryJob.status === "completed") {
+    } else if (summarizeJob) {
+      if (summarizeJob.status === "completed") {
         summaryStatus = "completed";
-      } else if (summaryJob.status === "failed") {
+      } else if (summarizeJob.status === "failed") {
         summaryStatus = "failed";
-        summaryError = summaryJob.error_message || "Unknown error";
+        summaryError = summarizeJob.error_message || "Unknown error";
       }
-      // "pending" and "processing" job statuses both show as "pending" in UI
     }
+
+    // Parse analysis results from summarize job's raw_response
+    const analysis = inferenceQueue.parseAnalysisResults(summarizeJob);
 
     // Check for stream session linked to this submission
     const streamSession = inferenceQueue.getStreamSessionBySubmission(id as string);
     let streamSessionData = null;
+    let combinedTranscript: string | null = null;
 
     if (streamSession) {
-      // Get all chunks for the session
-      const chunks = inferenceQueue.getSessionChunks(streamSession.id);
+      // Get all chunks with their analysis jobs (efficient JOIN query)
+      const chunksWithAnalysis = inferenceQueue.getSessionChunksWithAnalysis(streamSession.id);
 
       // Get unique speakers
-      const speakers = [...new Set(chunks.map(c => c.speaker).filter(s => s !== null))];
+      const speakers = [...new Set(chunksWithAnalysis.map(c => c.speaker).filter(s => s !== null))];
 
-      // Build combined transcript from chunks if no standard transcript
-      let combinedTranscript = submission.transcript;
-      if (!combinedTranscript && chunks.length > 0) {
-        combinedTranscript = chunks.map(c => c.transcript).join(" ");
+      // Build combined transcript from chunks
+      if (chunksWithAnalysis.length > 0) {
+        combinedTranscript = chunksWithAnalysis.map(c => c.transcript).join(" ");
       }
 
       streamSessionData = {
@@ -396,51 +415,77 @@ router.get("/info", async (req: Request, res: Response): Promise<void> => {
         status: streamSession.status,
         startedAt: streamSession.started_at,
         endedAt: streamSession.ended_at,
-        chunks: chunks.map(chunk => ({
-          id: chunk.id,
-          index: chunk.chunk_index,
-          speaker: chunk.speaker,
-          transcript: chunk.transcript,
-          startTimeMs: chunk.start_time_ms,
-          endTimeMs: chunk.end_time_ms,
-          confidence: chunk.confidence,
-          analysisStatus: chunk.analysis_status,
-          topics: chunk.topics ? JSON.parse(chunk.topics) : null,
-          intents: chunk.intents ? JSON.parse(chunk.intents) : null,
-          summary: chunk.summary,
-        })),
+        chunks: chunksWithAnalysis.map(chunk => {
+          // Derive analysis status from job
+          let analysisStatus: "pending" | "processing" | "completed" | "skipped" = "pending";
+          if (!chunk.analysis_job_id) {
+            // No job means either pending or skipped (too short)
+            analysisStatus = chunk.word_count < 3 ? "skipped" : "pending";
+          } else if (chunk.analysisJob) {
+            if (chunk.analysisJob.status === "completed") {
+              analysisStatus = "completed";
+            } else if (chunk.analysisJob.status === "processing" || chunk.analysisJob.status === "pending") {
+              analysisStatus = "processing";
+            } else {
+              analysisStatus = "pending"; // Failed jobs show as pending for retry
+            }
+          }
+
+          // Parse analysis from job
+          const chunkAnalysis = inferenceQueue.parseAnalysisResults(chunk.analysisJob);
+
+          return {
+            id: chunk.id,
+            index: chunk.chunk_index,
+            speaker: chunk.speaker,
+            transcript: chunk.transcript,
+            startTimeMs: chunk.start_time_ms,
+            endTimeMs: chunk.end_time_ms,
+            confidence: chunk.confidence,
+            analysisStatus,
+            topics: chunkAnalysis.topics.length > 0 ? chunkAnalysis.topics : null,
+            intents: chunkAnalysis.intents.length > 0 ? chunkAnalysis.intents : null,
+            summary: chunkAnalysis.summary,
+            sentiment: chunkAnalysis.sentiment,
+          };
+        }),
       };
 
-      // If this is a stream file, treat the stream as the source of truth
-      // For streams, we have real-time transcripts via chunks
+      // For stream files, use combined transcript from chunks
       if (submission.status === "streaming" || submission.status === "completed") {
         transcriptStatus = "completed";
-        if (combinedTranscript) {
-          submission.transcript = combinedTranscript;
-        }
       }
     }
 
-    // Always return file info with job-specific statuses
+    // Get transcript from job or combined chunks
+    const transcript = transcriptStatus === "completed"
+      ? (transcriptJob?.output_text || combinedTranscript || "")
+      : null;
+
+    // Always return file info with job-derived data
     res.json({
       id: submission.id,
       filename: submission.original_filename || submission.filename,
       duration: submission.duration_seconds || 0,
       size: submission.file_size || 0,
-      // Transcript section
+      // Transcript section (from transcribe job)
       transcriptStatus,
-      transcript: transcriptStatus === "completed" ? (submission.transcript || "") : null,
+      transcript,
       transcriptError,
       transcriptProvider: transcriptJob?.provider || null,
       transcriptModel: transcriptJob?.model_used || null,
-      transcriptConfidence: submission.transcript_confidence || null,
-      // Summary section
+      transcriptConfidence: transcriptJob?.confidence || null,
+      // Summary section (from summarize job)
       summaryStatus,
-      summary: summaryStatus === "completed" ? (submission.summary || "") : null,
+      summary: summaryStatus === "completed" ? (analysis.summary || "") : null,
       summaryError,
-      summaryProvider: summaryJob?.provider || null,
-      summaryModel: summaryJob?.model_used || null,
-      summaryConfidence: submission.summary_confidence || null,
+      summaryProvider: summarizeJob?.provider || null,
+      summaryModel: summarizeJob?.model_used || null,
+      summaryConfidence: summarizeJob?.confidence || null,
+      // Text intelligence analysis (from summarize job's raw_response)
+      topics: analysis.topics.length > 0 ? analysis.topics : null,
+      intents: analysis.intents.length > 0 ? analysis.intents : null,
+      sentiment: analysis.sentiment,
       // Stream session data (if this submission was from a stream)
       streamSession: streamSessionData,
     });

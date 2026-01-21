@@ -17,11 +17,21 @@ interface Intent {
   confidence: number
 }
 
+export interface ChunkSentiment {
+  sentiment: 'positive' | 'negative' | 'neutral'
+  sentimentScore: number
+  average: {
+    sentiment: 'positive' | 'negative' | 'neutral'
+    sentimentScore: number
+  }
+}
+
 export interface ChunkAnnotationData {
   id: number
   topics: Topic[]
   intents: Intent[]
   summary: string
+  sentiment: ChunkSentiment | null
 }
 
 interface ChunkAnnotationProps {
@@ -169,6 +179,50 @@ export function ChunkAnnotation({ annotation, isLoading }: ChunkAnnotationProps)
               {intent.intent}
             </span>
           ))}
+        </div>
+      )}
+
+      {/* Sentiment indicator */}
+      {annotation.sentiment && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+          }}
+        >
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '3px',
+              padding: '2px 6px',
+              background:
+                annotation.sentiment.sentiment === 'positive'
+                  ? '#e8f5e9'
+                  : annotation.sentiment.sentiment === 'negative'
+                  ? '#ffebee'
+                  : '#f5f5f5',
+              color:
+                annotation.sentiment.sentiment === 'positive'
+                  ? '#2e7d32'
+                  : annotation.sentiment.sentiment === 'negative'
+                  ? '#c62828'
+                  : '#666',
+              borderRadius: '4px',
+              fontSize: '10px',
+              fontWeight: 500,
+            }}
+            title={`Sentiment: ${annotation.sentiment.sentiment} (score: ${annotation.sentiment.sentimentScore.toFixed(2)})`}
+          >
+            {annotation.sentiment.sentiment === 'positive'
+              ? '+'
+              : annotation.sentiment.sentiment === 'negative'
+              ? '-'
+              : '~'}
+            {' '}
+            {annotation.sentiment.sentiment}
+          </span>
         </div>
       )}
 

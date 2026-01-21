@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 --------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  job_type TEXT NOT NULL CHECK(job_type IN ('transcribe', 'summarize')),
+  job_type TEXT NOT NULL CHECK(job_type IN ('transcribe', 'summarize', 'analyze_chunk')),
   status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
   provider TEXT NOT NULL DEFAULT 'local' CHECK(provider IN ('local', 'deepgram')),
 
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS audio_submissions (
   summarized_at TEXT,
 
   -- Status tracking
-  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'transcribing', 'summarizing', 'completed', 'failed')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'streaming', 'transcribing', 'summarizing', 'completed', 'failed')),
   error_message TEXT,
 
   -- Custom metadata (JSON)

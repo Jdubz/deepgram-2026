@@ -22,7 +22,37 @@ export interface TranscriptionResult {
 }
 
 /**
+ * Topic detected in text analysis
+ */
+export interface TopicResult {
+  topic: string;
+  confidence: number; // 0-1
+}
+
+/**
+ * Intent detected in text analysis
+ */
+export interface IntentResult {
+  intent: string;
+  confidence: number; // 0-1
+}
+
+/**
+ * Sentiment analysis result
+ * Compatible with both Deepgram format and LocalAI simplified format
+ */
+export interface SentimentResult {
+  sentiment: "positive" | "negative" | "neutral";
+  sentimentScore: number; // -1 to 1
+  average: {
+    sentiment: "positive" | "negative" | "neutral";
+    sentimentScore: number;
+  };
+}
+
+/**
  * Result of a summarization operation
+ * Extended to include full text analysis when using local provider
  */
 export interface SummarizationResult {
   text: string;
@@ -31,6 +61,10 @@ export interface SummarizationResult {
   tokensUsed: number;
   processingTimeMs: number;
   rawResponse: unknown;
+  // Extended analysis fields (populated by local provider)
+  topics?: TopicResult[];
+  intents?: IntentResult[];
+  sentiment?: SentimentResult;
 }
 
 /**
@@ -110,4 +144,8 @@ export interface AudioInfoResponse {
   summaryProvider: string | null;
   summaryModel: string | null;
   summaryConfidence: number | null;
+  // Text intelligence analysis
+  topics: TopicResult[] | null;
+  intents: IntentResult[] | null;
+  sentiment: SentimentResult | null;
 }
