@@ -17,30 +17,13 @@ import { inferenceQueue } from "./inference-queue.js";
 import { jobEventHub } from "./job-event-hub.js";
 
 // Message types from clients
-interface AuthMessage {
-  type: "auth";
-  password: string;
+interface ControlMessage {
+  type: "auth" | "stop";
 }
-
-interface AudioMessage {
-  type: "audio";
-  data: string; // base64 encoded audio
-}
-
-interface StopMessage {
-  type: "stop";
-}
-
-type BroadcasterMessage = AuthMessage | AudioMessage | StopMessage;
 
 // Message types to clients
 interface AuthSuccessMessage {
   type: "auth_success";
-}
-
-interface AuthFailedMessage {
-  type: "auth_failed";
-  error: string;
 }
 
 interface TranscriptMessage {
@@ -108,7 +91,6 @@ interface ErrorMessage {
 
 type ServerMessage =
   | AuthSuccessMessage
-  | AuthFailedMessage
   | TranscriptMessage
   | SessionMessage
   | SessionCreatedMessage
@@ -117,14 +99,6 @@ type ServerMessage =
   | StatusMessage
   | ErrorMessage;
 
-// Rate limiting for auth attempts
-interface RateLimitEntry {
-  attempts: number;
-  lastAttempt: number;
-}
-
-const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
-const MAX_AUTH_ATTEMPTS = 5;
 const MAX_VIEWERS = 50;
 
 // Minimum word count for analysis (skip short utterances)
@@ -175,9 +149,7 @@ export class StreamHub {
   private broadcasterAuthenticated = false;
   private viewers: Set<WebSocket> = new Set();
   private deepgramStream: DeepgramStream | null = null;
-  private broadcastPassword: string;
   private deepgramApiKey: string;
-  private rateLimitMap: Map<string, RateLimitEntry> = new Map();
   private sessionStartTime: number | null = null;
 
   // Audio file persistence
@@ -196,12 +168,8 @@ export class StreamHub {
   private statusBroadcastTimeout: NodeJS.Timeout | null = null;
 
   constructor() {
-    this.broadcastPassword = process.env.STREAM_PASSWORD || "";
     this.deepgramApiKey = process.env.DEEPGRAM_API_KEY || "";
 
-    if (!this.broadcastPassword) {
-      console.warn("[StreamHub] STREAM_PASSWORD not set - only localhost can broadcast");
-    }
     if (!this.deepgramApiKey) {
       console.warn("[StreamHub] DEEPGRAM_API_KEY not set - streaming will fail");
     }
@@ -220,16 +188,14 @@ export class StreamHub {
   }
 
   /**
-   * Handle a new broadcaster connection
+   * Handle a new broadcaster connection (localhost only)
    */
   handleBroadcaster(ws: WebSocket, clientIp: string): void {
-    const isLocal = this.isLocalhost(clientIp);
-
-    // Check if streaming is allowed
-    if (!this.broadcastPassword && !isLocal) {
+    // Only localhost can broadcast
+    if (!this.isLocalhost(clientIp)) {
       this.sendMessage(ws, {
         type: "error",
-        message: "Streaming not configured. Only localhost connections are allowed.",
+        message: "Only localhost connections are allowed to broadcast.",
       });
       ws.close();
       return;
@@ -252,15 +218,13 @@ export class StreamHub {
 
     this.broadcaster = ws;
     this.broadcasterAuthenticated = false;
-    console.log(`[StreamHub] Broadcaster connected from ${clientIp} (localhost: ${isLocal})`);
+    console.log(`[StreamHub] Broadcaster connected from ${clientIp}`);
 
     // Auto-authenticate localhost connections
-    if (isLocal) {
-      this.autoAuthenticateBroadcaster(ws, clientIp);
-    }
+    this.autoAuthenticateBroadcaster(ws, clientIp);
 
     ws.on("message", (data: Buffer) => {
-      this.handleBroadcasterMessage(ws, data, clientIp);
+      this.handleBroadcasterMessage(ws, data);
     });
 
     ws.on("close", () => {
@@ -273,44 +237,15 @@ export class StreamHub {
     });
   }
 
-  private handleBroadcasterMessage(ws: WebSocket, data: Buffer, clientIp: string): void {
-    // If not authenticated, expect auth message (JSON)
-    if (!this.broadcasterAuthenticated) {
-      try {
-        const message = JSON.parse(data.toString()) as BroadcasterMessage;
-
-        if (message.type === "auth") {
-          this.handleAuth(ws, message.password, clientIp);
-        } else {
-          this.sendMessage(ws, {
-            type: "error",
-            message: "Authentication required. Send auth message first.",
-          });
-        }
-      } catch {
-        this.sendMessage(ws, {
-          type: "error",
-          message: "Invalid message format. Expected JSON auth message.",
-        });
-      }
-      return;
-    }
-
-    // After authentication, handle audio or control messages
+  private handleBroadcasterMessage(_ws: WebSocket, data: Buffer): void {
+    // Handle control messages (JSON) or raw audio (binary)
     try {
-      // Try to parse as JSON control message
-      const message = JSON.parse(data.toString()) as BroadcasterMessage;
+      const message = JSON.parse(data.toString()) as ControlMessage;
 
       if (message.type === "stop") {
         this.stopStreaming();
-      } else if (message.type === "audio" && message.data) {
-        // Base64 encoded audio
-        const audioBuffer = Buffer.from(message.data, "base64");
-        this.relayAudio(audioBuffer);
       } else if (message.type === "auth") {
-        // Ignore auth messages if already authenticated (e.g., localhost auto-auth)
-        // Just acknowledge it
-        console.log("[StreamHub] Ignoring redundant auth message (already authenticated)");
+        // Client sends auth message after auto-auth; just ignore it
       }
     } catch {
       // Not JSON - treat as raw binary audio data
@@ -324,74 +259,6 @@ export class StreamHub {
   private autoAuthenticateBroadcaster(ws: WebSocket, clientIp: string): void {
     this.broadcasterAuthenticated = true;
     console.log(`[StreamHub] Broadcaster auto-authenticated from localhost (${clientIp})`);
-
-    this.sendMessage(ws, { type: "auth_success" });
-
-    // Initialize session and file storage
-    this.initializeSession();
-
-    // Start Deepgram connection
-    this.startDeepgramStream();
-
-    // Notify viewers
-    this.sessionStartTime = Date.now();
-    this.broadcastToViewers({ type: "session_started" });
-
-    // Broadcast session_created with IDs
-    if (this.currentSessionId && this.currentSubmissionId) {
-      this.broadcastToViewers({
-        type: "session_created",
-        sessionId: this.currentSessionId,
-        submissionId: this.currentSubmissionId,
-      });
-    }
-
-    this.broadcastStatus();
-  }
-
-  private handleAuth(ws: WebSocket, password: string, clientIp: string): void {
-    // Check rate limit
-    const rateLimitKey = clientIp;
-    const now = Date.now();
-    const entry = this.rateLimitMap.get(rateLimitKey);
-
-    if (entry) {
-      // Reset if window expired
-      if (now - entry.lastAttempt > RATE_LIMIT_WINDOW_MS) {
-        entry.attempts = 0;
-      }
-
-      if (entry.attempts >= MAX_AUTH_ATTEMPTS) {
-        this.sendMessage(ws, {
-          type: "auth_failed",
-          error: "Too many authentication attempts. Try again later.",
-        });
-        ws.close();
-        return;
-      }
-
-      entry.attempts++;
-      entry.lastAttempt = now;
-    } else {
-      this.rateLimitMap.set(rateLimitKey, { attempts: 1, lastAttempt: now });
-    }
-
-    // Validate password
-    if (password !== this.broadcastPassword) {
-      this.sendMessage(ws, {
-        type: "auth_failed",
-        error: "Invalid password",
-      });
-      console.log(`[StreamHub] Auth failed from ${clientIp}`);
-      return;
-    }
-
-    // Authentication successful
-    this.broadcasterAuthenticated = true;
-    console.log(`[StreamHub] Broadcaster authenticated from ${clientIp}`);
-
-    // Clear rate limit on success
-    this.rateLimitMap.delete(rateLimitKey);
 
     this.sendMessage(ws, { type: "auth_success" });
 
