@@ -26,11 +26,16 @@ export function formatDurationClock(seconds: number): string {
 }
 
 /**
- * Format ISO timestamp to local time string
+ * Format timestamp to local time string
+ * SQLite stores UTC times without timezone indicator, so we append 'Z' if needed
  */
-export function formatTime(isoString: string | null): string {
-  if (!isoString) return '-'
-  return new Date(isoString).toLocaleTimeString()
+export function formatTime(timestamp: string | null): string {
+  if (!timestamp) return '-'
+  // If timestamp lacks timezone info, treat it as UTC by appending 'Z'
+  const utcTimestamp = timestamp.includes('Z') || timestamp.includes('+') || timestamp.includes('-', 10)
+    ? timestamp
+    : timestamp.replace(' ', 'T') + 'Z'
+  return new Date(utcTimestamp).toLocaleTimeString()
 }
 
 /**
