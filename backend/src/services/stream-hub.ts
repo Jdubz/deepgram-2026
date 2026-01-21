@@ -145,6 +145,7 @@ export class StreamHub {
   // Audio file persistence
   private currentSubmissionId: string | null = null;
   private currentSessionId: string | null = null;
+  private lastSessionId: string | null = null; // For replay after session ends
   private audioFileStream: fs.WriteStream | null = null;
   private audioFilePath: string | null = null;
   private totalAudioBytes = 0;
@@ -377,6 +378,9 @@ export class StreamHub {
   }
 
   private initializeSession(): void {
+    // Clear last session when starting a new one
+    this.lastSessionId = null;
+
     // Ensure uploads directory exists
     if (!fs.existsSync(UPLOADS_DIR)) {
       fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -697,6 +701,11 @@ export class StreamHub {
       );
     }
 
+    // Save session ID for replay to late-joining viewers
+    if (this.currentSessionId) {
+      this.lastSessionId = this.currentSessionId;
+    }
+
     // Reset state
     this.currentSubmissionId = null;
     this.currentSessionId = null;
@@ -752,11 +761,11 @@ export class StreamHub {
       viewerCount: this.viewers.size,
     });
 
-    // If there's an active session, replay existing chunks from the database
-    // Note: We don't send session_created here because it triggers a state reset
-    // in the frontend. The chunks contain all the info needed.
-    if (this.currentSessionId) {
-      this.replayChunksToViewer(ws, this.currentSessionId);
+    // Replay chunks from the current session (if live) or last session (if ended)
+    // This allows viewers to see the conversation after joining late or refreshing
+    const sessionToReplay = this.currentSessionId || this.lastSessionId;
+    if (sessionToReplay) {
+      this.replayChunksToViewer(ws, sessionToReplay);
     }
 
     ws.on("close", () => {

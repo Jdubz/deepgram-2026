@@ -237,7 +237,7 @@ export function StreamViewer({ isActive = true, onSessionCreated }: StreamViewer
 
   const { connectionState, connect, disconnect } = useWebSocket<ServerMessage>({
     path: '/stream/watch',
-    enabled: hasBeenActive,
+    enabled: true, // Always connect to receive session_created events for file list updates
     onMessage: handleMessage,
     onError: handleError,
     onOpen: () => setError(null),
