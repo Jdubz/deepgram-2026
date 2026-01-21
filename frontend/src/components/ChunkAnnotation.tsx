@@ -1,7 +1,7 @@
 /**
  * ChunkAnnotation Component
  *
- * Displays analysis results for a stream chunk:
+ * Displays analysis results for a stream segment:
  * - Topics as colored tags
  * - Intents as icon labels
  * - Summary on hover

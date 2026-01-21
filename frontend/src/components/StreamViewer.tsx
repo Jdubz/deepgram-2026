@@ -546,7 +546,7 @@ export function StreamViewer({ isActive = true, onSessionCreated }: StreamViewer
           }}
         >
           Stream ended. Transcript preserved above.
-          {chunks.length > 0 && ` (${chunks.length} analyzed chunks)`}
+          {chunks.length > 0 && ` (${chunks.length} analyzed segments)`}
         </div>
       )}
 
