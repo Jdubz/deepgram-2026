@@ -1259,7 +1259,7 @@ class InferenceQueueService {
       }
 
       // Extract summary
-      const summary = results.summary?.short || job.output_text || null;
+      const summary = results.summary?.text || job.output_text || null;
 
       return { topics, intents, sentiment, summary };
     } catch {
