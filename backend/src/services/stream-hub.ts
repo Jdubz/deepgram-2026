@@ -155,6 +155,9 @@ export class StreamHub {
   private accumulatedSegments: TranscriptSegment[] = [];
   private utteranceStartTimeMs = 0;
 
+  // Debounce status broadcasts to avoid flicker from React Strict Mode double-mounting
+  private statusBroadcastTimeout: NodeJS.Timeout | null = null;
+
   constructor() {
     this.broadcastPassword = process.env.STREAM_PASSWORD || "";
     this.deepgramApiKey = process.env.DEEPGRAM_API_KEY || "";
@@ -754,11 +757,12 @@ export class StreamHub {
     this.viewers.add(ws);
     console.log(`[StreamHub] Viewer connected. Total viewers: ${this.viewers.size}`);
 
-    // Send current status
+    // Send initial status (isLive) immediately, but defer viewer count
+    // to avoid flicker from React Strict Mode double-mounting
     this.sendMessage(ws, {
       type: "status",
       isLive: this.broadcasterAuthenticated && !!this.deepgramStream,
-      viewerCount: this.viewers.size,
+      viewerCount: 0, // Will be updated by debounced broadcast
     });
 
     // Replay chunks from the current session (if live) or last session (if ended)
@@ -778,7 +782,7 @@ export class StreamHub {
       this.viewers.delete(ws);
     });
 
-    // Broadcast updated viewer count
+    // Broadcast updated viewer count (debounced)
     this.broadcastStatus();
   }
 
@@ -807,19 +811,29 @@ export class StreamHub {
   }
 
   private broadcastStatus(): void {
-    const status: StatusMessage = {
-      type: "status",
-      isLive: this.broadcasterAuthenticated && !!this.deepgramStream,
-      viewerCount: this.viewers.size,
-    };
-
-    // Send to broadcaster
-    if (this.broadcaster && this.broadcaster.readyState === WebSocket.OPEN) {
-      this.sendMessage(this.broadcaster, status);
+    // Debounce status broadcasts to avoid flicker from React Strict Mode
+    // double-mounting (connect -> connect -> disconnect pattern)
+    if (this.statusBroadcastTimeout) {
+      clearTimeout(this.statusBroadcastTimeout);
     }
 
-    // Send to all viewers
-    this.broadcastToViewers(status);
+    this.statusBroadcastTimeout = setTimeout(() => {
+      this.statusBroadcastTimeout = null;
+
+      const status: StatusMessage = {
+        type: "status",
+        isLive: this.broadcasterAuthenticated && !!this.deepgramStream,
+        viewerCount: this.viewers.size,
+      };
+
+      // Send to broadcaster
+      if (this.broadcaster && this.broadcaster.readyState === WebSocket.OPEN) {
+        this.sendMessage(this.broadcaster, status);
+      }
+
+      // Send to all viewers
+      this.broadcastToViewers(status);
+    }, 100); // 100ms debounce
   }
 
   private sendMessage(ws: WebSocket, message: ServerMessage): void {
