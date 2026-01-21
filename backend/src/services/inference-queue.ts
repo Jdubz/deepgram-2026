@@ -312,6 +312,10 @@ class InferenceQueueService {
     return streamService.getSessionChunksWithAnalysis(sessionId);
   }
 
+  getAllChunksWithAnalysis(): ChunkWithAnalysis[] {
+    return streamService.getAllChunksWithAnalysis();
+  }
+
   // ===========================================================================
   // Health Methods (delegated to JobHealthService)
   // ===========================================================================

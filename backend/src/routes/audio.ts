@@ -322,14 +322,35 @@ router.get("/download", async (req: Request, res: Response): Promise<void> => {
 
     const filename = submission.original_filename || submission.filename;
     const mimeType = submission.mime_type || "application/octet-stream";
+    const fileSize = stat.size;
 
-    res.setHeader("Content-Type", mimeType);
-    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-    res.setHeader("Content-Length", stat.size);
+    // Handle Range requests for seeking support
+    const rangeHeader = req.headers.range;
+    if (rangeHeader) {
+      const parts = rangeHeader.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunkSize = end - start + 1;
 
-    // Stream file from disk instead of loading into memory
-    const fileStream = fs.createReadStream(submission.file_path);
-    fileStream.pipe(res);
+      res.status(206);
+      res.setHeader("Content-Type", mimeType);
+      res.setHeader("Content-Range", `bytes ${start}-${end}/${fileSize}`);
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", chunkSize);
+      res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+
+      const fileStream = fs.createReadStream(submission.file_path, { start, end });
+      fileStream.pipe(res);
+    } else {
+      // Full file request
+      res.setHeader("Content-Type", mimeType);
+      res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+      res.setHeader("Content-Length", fileSize);
+      res.setHeader("Accept-Ranges", "bytes");
+
+      const fileStream = fs.createReadStream(submission.file_path);
+      fileStream.pipe(res);
+    }
   } catch (error) {
     console.error("Download error:", error);
     res.status(500).json({ error: "Internal server error" });

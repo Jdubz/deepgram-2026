@@ -72,6 +72,7 @@ interface ChunkCreatedMessage {
     transcript: string;
     startTimeMs: number;
     endTimeMs: number;
+    willBeAnalyzed?: boolean; // false for short chunks that won't get analysis
   };
 }
 
@@ -127,10 +128,47 @@ const MAX_AUTH_ATTEMPTS = 5;
 const MAX_VIEWERS = 50;
 
 // Minimum word count for analysis (skip short utterances)
-const MIN_WORDS_FOR_ANALYSIS = 20;
+// All chunks are analyzed regardless of word count
+const MIN_WORDS_FOR_ANALYSIS = 0;
 
 // Uploads directory path
 const UPLOADS_DIR = path.join(process.cwd(), "uploads");
+
+// WAV file constants (16-bit PCM, 16kHz, mono)
+const WAV_SAMPLE_RATE = 16000;
+const WAV_BITS_PER_SAMPLE = 16;
+const WAV_NUM_CHANNELS = 1;
+const WAV_HEADER_SIZE = 44;
+
+/**
+ * Create a WAV file header for PCM audio data
+ */
+function createWavHeader(dataSize: number): Buffer {
+  const header = Buffer.alloc(WAV_HEADER_SIZE);
+  const byteRate = WAV_SAMPLE_RATE * WAV_NUM_CHANNELS * (WAV_BITS_PER_SAMPLE / 8);
+  const blockAlign = WAV_NUM_CHANNELS * (WAV_BITS_PER_SAMPLE / 8);
+
+  // RIFF chunk descriptor
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + dataSize, 4); // File size - 8
+  header.write("WAVE", 8);
+
+  // fmt sub-chunk
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16); // Subchunk1Size (16 for PCM)
+  header.writeUInt16LE(1, 20); // AudioFormat (1 = PCM)
+  header.writeUInt16LE(WAV_NUM_CHANNELS, 22);
+  header.writeUInt32LE(WAV_SAMPLE_RATE, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(WAV_BITS_PER_SAMPLE, 34);
+
+  // data sub-chunk
+  header.write("data", 36);
+  header.writeUInt32LE(dataSize, 40);
+
+  return header;
+}
 
 export class StreamHub {
   private broadcaster: WebSocket | null = null;
@@ -145,7 +183,6 @@ export class StreamHub {
   // Audio file persistence
   private currentSubmissionId: string | null = null;
   private currentSessionId: string | null = null;
-  private lastSessionId: string | null = null; // For replay after session ends
   private audioFileStream: fs.WriteStream | null = null;
   private audioFilePath: string | null = null;
   private totalAudioBytes = 0;
@@ -381,9 +418,6 @@ export class StreamHub {
   }
 
   private initializeSession(): void {
-    // Clear last session when starting a new one
-    this.lastSessionId = null;
-
     // Ensure uploads directory exists
     if (!fs.existsSync(UPLOADS_DIR)) {
       fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -393,14 +427,18 @@ export class StreamHub {
     this.currentSubmissionId = randomUUID();
     this.currentSessionId = randomUUID();
 
-    // Create filename with timestamp
+    // Create filename with timestamp (WAV format for raw PCM)
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const filename = `stream-${timestamp}.webm`;
+    const filename = `stream-${timestamp}.wav`;
     this.audioFilePath = path.join(UPLOADS_DIR, filename);
 
     // Create audio file write stream
     this.audioFileStream = fs.createWriteStream(this.audioFilePath);
     this.totalAudioBytes = 0;
+
+    // Write placeholder WAV header (will be updated when stream ends)
+    const placeholderHeader = createWavHeader(0);
+    this.audioFileStream.write(placeholderHeader);
 
     // Create audio submission record
     inferenceQueue.createSubmission({
@@ -408,7 +446,7 @@ export class StreamHub {
       filename: filename,
       filePath: this.audioFilePath,
       originalFilename: filename,
-      mimeType: "audio/webm",
+      mimeType: "audio/wav",
       autoProcess: false, // Don't auto-transcribe, we're doing real-time
     });
 
@@ -550,6 +588,9 @@ export class StreamHub {
       `[StreamHub] ${logPrefix}Chunk ${chunk.id} created: speaker=${speaker}, words=${chunk.word_count}`
     );
 
+    // Determine if this chunk will be analyzed (enough words)
+    const willBeAnalyzed = chunk.word_count >= MIN_WORDS_FOR_ANALYSIS;
+
     // Broadcast chunk_created to viewers
     const chunkCreatedMessage: ChunkCreatedMessage = {
       type: "chunk_created",
@@ -561,6 +602,7 @@ export class StreamHub {
         transcript: chunk.transcript,
         startTimeMs: chunk.start_time_ms,
         endTimeMs: chunk.end_time_ms,
+        willBeAnalyzed,
       },
     };
 
@@ -570,7 +612,7 @@ export class StreamHub {
     this.broadcastToViewers(chunkCreatedMessage);
 
     // Queue analysis job if chunk has enough words
-    if (chunk.word_count >= MIN_WORDS_FOR_ANALYSIS) {
+    if (willBeAnalyzed) {
       try {
         const jobId = inferenceQueue.createAnalyzeChunkJob({
           chunkId: chunk.id,
@@ -672,12 +714,25 @@ export class StreamHub {
       this.audioFileStream = null;
     }
 
-    // Calculate session duration
-    const durationMs = this.sessionStartTime
-      ? Date.now() - this.sessionStartTime
-      : 0;
+    // Update WAV header with correct data size
+    if (this.audioFilePath && this.totalAudioBytes > 0) {
+      try {
+        const wavHeader = createWavHeader(this.totalAudioBytes);
+        const fd = fs.openSync(this.audioFilePath, "r+");
+        fs.writeSync(fd, wavHeader, 0, WAV_HEADER_SIZE, 0);
+        fs.closeSync(fd);
+        console.log(`[StreamHub] WAV header updated: ${this.totalAudioBytes} bytes of audio data`);
+      } catch (err) {
+        console.error("[StreamHub] Failed to update WAV header:", err);
+      }
+    }
 
-    // Update submission with file size (transcript is derived from chunks when needed)
+    // Calculate session duration from audio data (more accurate than wall clock)
+    // 16-bit samples at 16kHz = 2 bytes per sample = 32000 bytes per second
+    const durationFromAudio = this.totalAudioBytes / (WAV_SAMPLE_RATE * WAV_NUM_CHANNELS * (WAV_BITS_PER_SAMPLE / 8));
+    const durationMs = durationFromAudio * 1000;
+
+    // Update submission with file size
     if (this.currentSubmissionId && this.audioFilePath) {
       try {
         const stats = fs.statSync(this.audioFilePath);
@@ -685,11 +740,11 @@ export class StreamHub {
         inferenceQueue.finalizeStreamSubmission(
           this.currentSubmissionId,
           stats.size,
-          durationMs / 1000 // Convert to seconds
+          durationFromAudio // Use accurate duration from audio data
         );
 
         console.log(
-          `[StreamHub] Submission ${this.currentSubmissionId} finalized: ${stats.size} bytes`
+          `[StreamHub] Submission ${this.currentSubmissionId} finalized: ${stats.size} bytes, ${durationFromAudio.toFixed(1)}s`
         );
       } catch (err) {
         console.error("[StreamHub] Failed to update submission:", err);
@@ -702,11 +757,6 @@ export class StreamHub {
       console.log(
         `[StreamHub] Session ${this.currentSessionId} ended: ${durationMs}ms`
       );
-    }
-
-    // Save session ID for replay to late-joining viewers
-    if (this.currentSessionId) {
-      this.lastSessionId = this.currentSessionId;
     }
 
     // Reset state
@@ -765,12 +815,9 @@ export class StreamHub {
       viewerCount: 0, // Will be updated by debounced broadcast
     });
 
-    // Replay chunks from the current session (if live) or last session (if ended)
-    // This allows viewers to see the conversation after joining late or refreshing
-    const sessionToReplay = this.currentSessionId || this.lastSessionId;
-    if (sessionToReplay) {
-      this.replayChunksToViewer(ws, sessionToReplay);
-    }
+    // Replay all transcript chunks from the database
+    // This allows viewers to see the full conversation history after joining late or refreshing
+    this.replayAllChunksToViewer(ws);
 
     ws.on("close", () => {
       this.viewers.delete(ws);
@@ -894,19 +941,20 @@ export class StreamHub {
   }
 
   /**
-   * Replay existing chunks from database to a newly connected viewer
-   * This allows viewers to see transcript history when joining mid-session or after refresh
+   * Replay all chunks from database to a newly connected viewer
+   * This allows viewers to see the full transcript history
    */
-  private replayChunksToViewer(ws: WebSocket, sessionId: string): void {
+  private replayAllChunksToViewer(ws: WebSocket): void {
     try {
-      const chunks = inferenceQueue.getSessionChunksWithAnalysis(sessionId);
+      const chunks = inferenceQueue.getAllChunksWithAnalysis();
       console.log(`[StreamHub] Replaying ${chunks.length} chunks to new viewer`);
 
       for (const chunk of chunks) {
         // Send chunk_created message
+        // willBeAnalyzed is true only if the chunk has an analysis job
         const chunkCreatedMsg: ChunkCreatedMessage = {
           type: "chunk_created",
-          sessionId,
+          sessionId: chunk.session_id,
           chunk: {
             id: chunk.id,
             index: chunk.chunk_index,
@@ -914,6 +962,7 @@ export class StreamHub {
             transcript: chunk.transcript,
             startTimeMs: chunk.start_time_ms,
             endTimeMs: chunk.end_time_ms,
+            willBeAnalyzed: chunk.analysis_job_id !== null,
           },
         };
         this.sendMessage(ws, chunkCreatedMsg);
@@ -923,7 +972,7 @@ export class StreamHub {
           const analysisResults = inferenceQueue.parseAnalysisResults(chunk.analysisJob);
           const chunkAnalyzedMsg: ChunkAnalyzedMessage = {
             type: "chunk_analyzed",
-            sessionId,
+            sessionId: chunk.session_id,
             chunkId: chunk.id,
             topics: analysisResults.topics,
             intents: analysisResults.intents,

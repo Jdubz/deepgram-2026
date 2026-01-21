@@ -42,6 +42,7 @@ interface ServerMessage {
     transcript: string
     startTimeMs: number
     endTimeMs: number
+    willBeAnalyzed?: boolean
   }
   chunkId?: number
   topics?: Array<{ topic: string; confidence: number }>
@@ -83,6 +84,7 @@ export function StreamViewer({ isActive = true, onSessionCreated }: StreamViewer
   }, [entries, chunks, autoScroll])
 
   const handleMessage = useCallback((message: ServerMessage) => {
+    console.log('[StreamViewer] Received message:', message.type)
     switch (message.type) {
       case 'transcript':
         if (message.text) {
@@ -142,7 +144,10 @@ export function StreamViewer({ isActive = true, onSessionCreated }: StreamViewer
         break
 
       case 'chunk_created':
+        console.log('[StreamViewer] Received chunk_created:', message.chunk)
         if (message.chunk) {
+          // Only show analyzing state if the chunk will actually be analyzed
+          const willBeAnalyzed = message.chunk.willBeAnalyzed !== false
           const newChunk: ChunkData = {
             id: message.chunk.id,
             index: message.chunk.index,
@@ -151,7 +156,7 @@ export function StreamViewer({ isActive = true, onSessionCreated }: StreamViewer
             startTimeMs: message.chunk.startTimeMs,
             endTimeMs: message.chunk.endTimeMs,
             annotation: null,
-            isAnalyzing: true,
+            isAnalyzing: willBeAnalyzed,
           }
           setChunks((prev) => {
             // Avoid duplicates (e.g., from replay + live)

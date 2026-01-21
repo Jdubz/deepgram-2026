@@ -148,8 +148,20 @@ export function FileInfoModal({ fileInfo, onClose, onDownload }: FileInfoModalPr
         <div style={{ marginTop: '16px' }}>
           <audio
             controls
+            preload="metadata"
             src={`/api/download?id=${encodeURIComponent(fileInfo.id)}`}
             style={{ width: '100%' }}
+            onError={(e) => {
+              const audio = e.currentTarget
+              const error = audio.error
+              console.error('[Audio Player] Error:', {
+                code: error?.code,
+                message: error?.message,
+                networkState: audio.networkState,
+                readyState: audio.readyState,
+                src: audio.src,
+              })
+            }}
           >
             Your browser does not support the audio element.
           </audio>
@@ -205,48 +217,97 @@ export function FileInfoModal({ fileInfo, onClose, onDownload }: FileInfoModalPr
           )}
         </div>
 
-        {/* Summary section with job-specific status */}
-        <div style={{ marginTop: '16px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
-            <strong>AI Summary</strong>
-            {fileInfo.summaryProvider && (
+        {/* Summary section - different handling for stream files vs uploaded files */}
+        {fileInfo.streamSession ? (
+          // Stream files: Show combined summary from chunks
+          <div style={{ marginTop: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
+              <strong>AI Summary</strong>
               <span style={{ color: '#666', fontSize: '12px', marginLeft: '8px' }}>
-                ({fileInfo.summaryProvider}
-                {fileInfo.summaryModel ? ` / ${fileInfo.summaryModel}` : ''})
+                (from {fileInfo.streamSession.chunks.length} segments)
               </span>
+            </div>
+            {fileInfo.streamSession.chunks.some(c => c.analysisStatus === 'completed' && c.summary) ? (
+              <div style={{ background: '#f5f5f5', padding: '8px', borderRadius: '4px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {fileInfo.streamSession.chunks
+                  .filter(c => c.analysisStatus === 'completed' && c.summary)
+                  .map((chunk) => {
+                    const speakerColors = ['#e3f2fd', '#f3e5f5', '#e8f5e9', '#fff3e0']
+                    const borderColors = ['#1976d2', '#7b1fa2', '#388e3c', '#f57c00']
+                    const colorIndex = chunk.speaker !== null ? chunk.speaker % speakerColors.length : 0
+                    return (
+                      <div
+                        key={chunk.id}
+                        style={{
+                          background: speakerColors[colorIndex],
+                          borderLeft: `3px solid ${borderColors[colorIndex]}`,
+                          padding: '10px 12px',
+                          borderRadius: '4px',
+                          fontSize: '14px',
+                        }}
+                      >
+                        <span style={{ fontSize: '11px', color: '#666', display: 'block', marginBottom: '4px' }}>
+                          {chunk.speaker !== null ? `Speaker ${chunk.speaker + 1}` : 'Unknown'} • {Math.round(chunk.startTimeMs / 1000)}s
+                        </span>
+                        {chunk.summary}
+                      </div>
+                    )
+                  })}
+              </div>
+            ) : fileInfo.streamSession.chunks.some(c => c.analysisStatus === 'pending' || c.analysisStatus === 'processing') ? (
+              <p style={{ background: '#fff3e0', padding: '12px', borderRadius: '4px', color: '#e65100' }}>
+                Analysis in progress...
+              </p>
+            ) : (
+              <p style={{ background: '#f5f5f5', padding: '12px', borderRadius: '4px', color: '#666' }}>
+                No summaries available
+              </p>
             )}
-            <ConfidenceBadge confidence={fileInfo.summaryConfidence} label="Confidence" />
           </div>
-          {fileInfo.summaryStatus === 'pending' && (
-            <p
-              style={{
-                background: '#fff3e0',
-                padding: '12px',
-                borderRadius: '4px',
-                color: '#e65100',
-              }}
-            >
-              Pending...
-            </p>
-          )}
-          {fileInfo.summaryStatus === 'failed' && (
-            <p
-              style={{
-                background: '#ffebee',
-                padding: '12px',
-                borderRadius: '4px',
-                color: '#c62828',
-              }}
-            >
-              Failed: {fileInfo.summaryError || 'Unknown error'}
-            </p>
-          )}
-          {fileInfo.summaryStatus === 'completed' && (
-            <p style={{ background: '#e3f2fd', padding: '12px', borderRadius: '4px' }}>
-              {fileInfo.summary || '(Empty summary)'}
-            </p>
-          )}
-        </div>
+        ) : (
+          // Uploaded files: Show single summary job status
+          <div style={{ marginTop: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
+              <strong>AI Summary</strong>
+              {fileInfo.summaryProvider && (
+                <span style={{ color: '#666', fontSize: '12px', marginLeft: '8px' }}>
+                  ({fileInfo.summaryProvider}
+                  {fileInfo.summaryModel ? ` / ${fileInfo.summaryModel}` : ''})
+                </span>
+              )}
+              <ConfidenceBadge confidence={fileInfo.summaryConfidence} label="Confidence" />
+            </div>
+            {fileInfo.summaryStatus === 'pending' && (
+              <p
+                style={{
+                  background: '#fff3e0',
+                  padding: '12px',
+                  borderRadius: '4px',
+                  color: '#e65100',
+                }}
+              >
+                Pending...
+              </p>
+            )}
+            {fileInfo.summaryStatus === 'failed' && (
+              <p
+                style={{
+                  background: '#ffebee',
+                  padding: '12px',
+                  borderRadius: '4px',
+                  color: '#c62828',
+                }}
+              >
+                Failed: {fileInfo.summaryError || 'Unknown error'}
+              </p>
+            )}
+            {fileInfo.summaryStatus === 'completed' && (
+              <p style={{ background: '#e3f2fd', padding: '12px', borderRadius: '4px' }}>
+                {fileInfo.summary || '(Empty summary)'}
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Text Intelligence Analysis (Deepgram only) */}
         {fileInfo.summaryStatus === 'completed' && (fileInfo.topics || fileInfo.intents || fileInfo.sentiment) && (
@@ -299,7 +360,7 @@ export function FileInfoModal({ fileInfo, onClose, onDownload }: FileInfoModalPr
                 <div style={{ display: 'inline-flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' }}>
                   {fileInfo.topics.slice(0, 5).map((topic, index) => (
                     <span
-                      key={topic.topic}
+                      key={`${index}-${topic.topic}`}
                       style={{
                         display: 'inline-block',
                         padding: '3px 8px',
@@ -328,9 +389,9 @@ export function FileInfoModal({ fileInfo, onClose, onDownload }: FileInfoModalPr
               <div style={{ marginTop: '8px' }}>
                 <span style={{ fontSize: '13px', color: '#666' }}>Intents: </span>
                 <div style={{ display: 'inline-flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' }}>
-                  {fileInfo.intents.slice(0, 4).map((intent) => (
+                  {fileInfo.intents.slice(0, 4).map((intent, index) => (
                     <span
-                      key={intent.intent}
+                      key={`${index}-${intent.intent}`}
                       style={{
                         display: 'inline-block',
                         padding: '3px 8px',
@@ -419,9 +480,9 @@ export function FileInfoModal({ fileInfo, onClose, onDownload }: FileInfoModalPr
                           </span>
                         )}
                         {/* Topics */}
-                        {chunk.topics && chunk.topics.slice(0, 2).map((topic) => (
+                        {chunk.topics && chunk.topics.slice(0, 2).map((topic, topicIndex) => (
                           <span
-                            key={topic.topic}
+                            key={`${chunk.id}-topic-${topicIndex}`}
                             style={{
                               padding: '2px 6px',
                               background: '#e3f2fd',
@@ -434,9 +495,9 @@ export function FileInfoModal({ fileInfo, onClose, onDownload }: FileInfoModalPr
                           </span>
                         ))}
                         {/* Intents */}
-                        {chunk.intents && chunk.intents.slice(0, 1).map((intent) => (
+                        {chunk.intents && chunk.intents.slice(0, 1).map((intent, intentIndex) => (
                           <span
-                            key={intent.intent}
+                            key={`${chunk.id}-intent-${intentIndex}`}
                             style={{
                               padding: '2px 6px',
                               background: '#f5f5f5',

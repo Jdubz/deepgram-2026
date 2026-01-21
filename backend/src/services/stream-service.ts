@@ -98,6 +98,34 @@ export class StreamService {
   }
 
   /**
+   * Get the most recent session (for replay when no in-memory session exists)
+   * Returns the most recently started session that has chunks
+   */
+  getMostRecentSession(): StreamSession | null {
+    const db = this.getDb();
+    const stmt = db.prepare(`
+      SELECT s.* FROM stream_sessions s
+      WHERE EXISTS (SELECT 1 FROM stream_chunks c WHERE c.session_id = s.id)
+      ORDER BY s.started_at DESC
+      LIMIT 1
+    `);
+    return stmt.get() as StreamSession | null;
+  }
+
+  /**
+   * Get all chunks from all sessions, ordered by creation time
+   * Used to replay full transcript history to viewers
+   */
+  getAllChunks(): StreamChunk[] {
+    const db = this.getDb();
+    const stmt = db.prepare(`
+      SELECT * FROM stream_chunks
+      ORDER BY created_at ASC
+    `);
+    return stmt.all() as StreamChunk[];
+  }
+
+  /**
    * Update stream session
    */
   updateStreamSession(
@@ -226,6 +254,64 @@ export class StreamService {
       jobId,
       chunkId
     );
+  }
+
+  /**
+   * Get all chunks from all sessions with their analysis jobs
+   * Used to replay full transcript history to viewers
+   */
+  getAllChunksWithAnalysis(): ChunkWithAnalysis[] {
+    const db = this.getDb();
+
+    const rows = db.prepare(`
+      SELECT
+        c.id, c.session_id, c.chunk_index, c.speaker, c.transcript,
+        c.confidence, c.start_time_ms, c.end_time_ms, c.word_count,
+        c.analysis_job_id, c.created_at,
+        j.id as job_id, j.job_type as job_type, j.status as job_status,
+        j.provider as job_provider, j.output_text as job_output_text,
+        j.error_message as job_error_message, j.created_at as job_created_at,
+        j.completed_at as job_completed_at, j.processing_time_ms as job_processing_time_ms,
+        j.model_used as job_model_used, j.confidence as job_confidence,
+        j.raw_response as job_raw_response
+      FROM stream_chunks c
+      LEFT JOIN jobs j ON c.analysis_job_id = j.id
+      ORDER BY c.created_at ASC
+    `).all() as Array<Record<string, unknown>>;
+
+    return rows.map((row) => ({
+      id: row.id as number,
+      session_id: row.session_id as string,
+      chunk_index: row.chunk_index as number,
+      speaker: row.speaker as number | null,
+      transcript: row.transcript as string,
+      confidence: row.confidence as number | null,
+      start_time_ms: row.start_time_ms as number,
+      end_time_ms: row.end_time_ms as number,
+      word_count: row.word_count as number,
+      analysis_job_id: row.analysis_job_id as number | null,
+      created_at: row.created_at as string,
+      analysisJob: row.job_id ? {
+        id: row.job_id as number,
+        job_type: row.job_type as JobType,
+        status: row.job_status as JobStatus,
+        provider: row.job_provider as Provider,
+        input_file_path: null,
+        input_text: null,
+        output_text: row.job_output_text as string | null,
+        error_message: row.job_error_message as string | null,
+        audio_file_id: null,
+        metadata: null,
+        created_at: row.job_created_at as string,
+        started_at: null,
+        completed_at: row.job_completed_at as string | null,
+        processing_time_ms: row.job_processing_time_ms as number | null,
+        model_used: row.job_model_used as string | null,
+        confidence: row.job_confidence as number | null,
+        raw_response: row.job_raw_response as string | null,
+        raw_response_type: null,
+      } : null,
+    }));
   }
 
   /**

@@ -120,7 +120,7 @@ export function ChunkAnnotation({ annotation, isLoading }: ChunkAnnotationProps)
             const colors = TOPIC_COLORS[index % TOPIC_COLORS.length]
             return (
               <span
-                key={topic.topic}
+                key={`${index}-${topic.topic}`}
                 style={{
                   display: 'inline-block',
                   padding: '2px 6px',
@@ -146,9 +146,9 @@ export function ChunkAnnotation({ annotation, isLoading }: ChunkAnnotationProps)
       {/* Intents */}
       {topIntents.length > 0 && (
         <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-          {topIntents.map((intent) => (
+          {topIntents.map((intent, index) => (
             <span
-              key={intent.intent}
+              key={`${index}-${intent.intent}`}
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',

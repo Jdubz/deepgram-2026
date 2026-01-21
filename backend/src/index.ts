@@ -19,6 +19,7 @@ import cors from "cors";
 import { WebSocketServer, WebSocket } from "ws";
 import { IncomingMessage } from "http";
 import audioRoutes from "./routes/audio.js";
+import { errorHandler } from "./middleware/index.js";
 import { jobProcessor } from "./services/job-processor.js";
 import { inferenceQueue } from "./services/inference-queue.js";
 import { localAI } from "./services/localai.js";
@@ -79,11 +80,8 @@ app.use((_req, res) => {
   res.status(404).json({ error: "Not found" });
 });
 
-// Error handler (must have 4 params for Express to recognize it as error handler)
-app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error("Unhandled error:", err);
-  res.status(500).json({ error: "Internal server error" });
-});
+// Global error handler (must be last)
+app.use(errorHandler);
 
 // Start server (bind to all interfaces for Cloudflare tunnel access)
 const server = app.listen(Number(PORT), "0.0.0.0", () => {
